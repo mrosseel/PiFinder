@@ -1,15 +1,13 @@
-#!/usr/bin/python
-# -*- coding:utf-8 -*-
 """
 This module holds various utils
 and importers used during setup
 
 """
 import sqlite3
-import os
 from PiFinder.obj_types import OBJ_DESCRIPTORS
 from pathlib import Path
 import PiFinder.utils as utils
+import csv
 
 
 def create_logging_tables():
@@ -17,10 +15,8 @@ def create_logging_tables():
     Creates the base logging tables
     """
 
-    home = Path.home()
-    root_dir = Path(Path.home(), "PiFinder_data")
-    db_path = os.path.join(root_dir, "observations.db")
-    if os.path.exists(db_path):
+    db_path = Path(utils.home_dir, "observations.db")
+    if db_path.exists():
         return db_path
 
     # open the DB
@@ -58,6 +54,7 @@ def create_logging_tables():
     return db_path
 
 
+# TODO not used atm + do we really want to auto-expand the ngc descriptions?
 def decode_description(description):
     """
     decodes comma seperated descriptors
@@ -81,51 +78,12 @@ def decode_description(description):
     return ", ".join(result)
 
 
-def load_deepmap_600():
-    """
-    loads the deepmap 600 file to add
-    better descriptions and flag items
-    on the list
-    """
-    root_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    data_path = os.path.join(root_dir, "astro_data", "deepmap_600.txt")
-    field_list = [
-        "ID",
-        "Catalog",
-        "Name",
-        "App Mag",
-        "Type",
-        "RA",
-        "Dec",
-        "Con",
-        "Diff",
-        "Mag1",
-        "Mag2",
-        "Sf Br",
-        "Size",
-        "CatNotes",
-        "UserNotes",
-    ]
-    obj_list = []
-    with open(data_path, "r") as deepmap:
-        field_index = 0
-        for l in deepmap:
-            obj_rec = {}
-            l = l.strip()
-            ll = l.split("\t")
-            for i, v in enumerate(ll):
-                obj_rec[field_list[i]] = v
-            obj_list.append(obj_rec)
-    return obj_list
-
-
 def init_catalog_tables():
     """
     Creates blank catalog tables
 
     """
-    root_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    db_path = os.path.join(root_dir, "astro_data", "pifinder_objects.db")
+    db_path = Path(utils.astro_data_dir, "pifinder_objects.db")
 
     # open the DB
     conn = sqlite3.connect(db_path)
@@ -188,10 +146,8 @@ def dec_to_deg(dec, dec_m, dec_s):
     return dec_deg
 
 
-def load_collinder():
-    root_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    db_path = os.path.join(root_dir, "astro_data", "pifinder_objects.db")
-    if not os.path.exists(db_path):
+def get_database(db_path):
+    if not db_path.exists():
         print("DB does not exists")
         return False
 
@@ -199,8 +155,118 @@ def load_collinder():
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     db_c = conn.cursor()
+    return conn, db_c
 
-    coll = os.path.join(root_dir, "astro_data", "collinder.txt")
+
+def get_pifinder_database():
+    return get_database(Path(utils.astro_data_dir, "pifinder_objects.db"))
+
+
+def delete_catalog_from_database(db_c, catalog):
+    db_c.execute(f"delete from objects where catalog='{catalog}'")
+    db_c.execute(f"delete from names where catalog='{catalog}'")
+
+
+def count_rows_per_distinct_column(conn, db_c, table, column):
+    db_c.execute(f"SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}")
+    result = db_c.fetchall()
+    for row in result:
+        print(f"{row[0]}: {row[1]} entries")
+    conn.close()
+
+
+def count_empty_entries(conn, db_c, table, columns):
+    db_c = conn.cursor()
+    for column in columns:
+        db_c.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {column} IS NULL OR {column} = ''"
+        )
+        result = db_c.fetchone()
+        print(f"{column}: {result[0]} empty entries")
+    conn.close()
+
+
+def count_common_names_per_catalog():
+    conn, db_c = get_pifinder_database()
+    count_rows_per_distinct_column(conn, db_c, "names", "catalog")
+
+
+def count_empty_entries_in_tables():
+    conn, db_c = get_pifinder_database()
+    count_empty_entries(
+        conn, db_c, "names", ["common_name", "catalog", "sequence", "comment"]
+    )
+    conn, db_c = get_pifinder_database()
+    count_empty_entries(
+        conn,
+        db_c,
+        "objects",
+        [
+            "catalog",
+            "sequence",
+            "obj_type",
+            "ra",
+            "dec",
+            "const",
+            "l_size",
+            "size",
+            "mag",
+            "desc",
+        ],
+    )
+
+
+def print_database(conn, db_c):
+    conn, db_c = get_pifinder_database()
+    print(">-------------------------------------------------------")
+    count_common_names_per_catalog()
+    count_empty_entries_in_tables()
+    print("<-------------------------------------------------------")
+
+
+# not used atm
+def load_deepmap_600():
+    """
+    loads the deepmap 600 file to add
+    better descriptions and flag items
+    on the list
+    """
+    data_path = Path(utils.astro_data_dir, "deepmap_600.txt")
+    field_list = [
+        "ID",
+        "Catalog",
+        "Name",
+        "App Mag",
+        "Type",
+        "RA",
+        "Dec",
+        "Con",
+        "Diff",
+        "Mag1",
+        "Mag2",
+        "Sf Br",
+        "Size",
+        "CatNotes",
+        "UserNotes",
+    ]
+    obj_list = []
+    with open(data_path, "r") as deepmap:
+        field_index = 0
+        for l in deepmap:
+            obj_rec = {}
+            l = l.strip()
+            ll = l.split("\t")
+            for i, v in enumerate(ll):
+                obj_rec[field_list[i]] = v
+            obj_list.append(obj_rec)
+    return obj_list
+
+
+def load_collinder():
+    catalog = "Col"
+    conn, db_c = get_pifinder_database()
+    delete_catalog_from_database(db_c, catalog)
+    coll = Path(utils.astro_data_dir, "collinder.txt")
     with open(coll, "r") as df:
         df.readline()
         for l in df:
@@ -240,7 +306,7 @@ def load_collinder():
                     desc
                 )
                 values (
-                    "Col",
+                    "{catalog}",
                     {sequence},
                     {ra_deg},
                     {dec_deg},
@@ -250,13 +316,13 @@ def load_collinder():
                 )
             """
             db_c.execute(q)
-    conn.commit()
+            conn.commit()
     type_trans = {
         "Open cluster": "OC",
         "Asterism": "Ast",
         "Globular cluster": "Gb",
     }
-    coll2 = os.path.join(root_dir, "astro_data", "collinder2.txt")
+    coll2 = Path(utils.astro_data_dir, "collinder2.txt")
     with open(coll2, "r") as df:
         df.readline()
         for l in df:
@@ -274,7 +340,7 @@ def load_collinder():
                         obj_type = "{obj_type}",
                         mag = {mag}
                     where
-                        catalog = "Col"
+                        catalog = "{catalog}"
                         and sequence = {sequence}
                 """
             db_c.execute(q)
@@ -282,29 +348,21 @@ def load_collinder():
                 db_c.execute(
                     f"""
                         insert into names(common_name, catalog, sequence)
-                        values ("{other_names}", "Col", {sequence})
+                        values ("{other_names}", "{catalog}", {sequence})
                     """
                 )
     conn.commit()
 
 
 def load_sac_asterisms():
-    db_path = Path(utils.astro_data_dir, "pifinder_objects.db")
-    if not db_path.exists():
-        print("DB does not exists")
-        return False
-
-    # open the DB
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    db_c = conn.cursor()
+    catalog = "SaA"
+    conn, db_c = get_pifinder_database()
+    delete_catalog_from_database(db_c, catalog)
 
     saca = Path(utils.astro_data_dir, "SAC_Asterisms_Ver32_Fence.txt")
     sequence = 0
-    catalog = "SaA"
     print("Loading SAC Asterisms")
-    db_c.execute("delete from objects where catalog='SaA'")
-    db_c.execute("delete from names where catalog='SaA'")
+    delete_catalog_from_database(db_c, catalog)
     with open(saca, "r") as df:
         df.readline()
         for l in df:
@@ -366,7 +424,6 @@ def load_sac_asterisms():
                     "{desc}"
                 )
             """
-            print(q)
             db_c.execute(q)
             db_c.execute(
                 f"""
@@ -378,10 +435,121 @@ def load_sac_asterisms():
     conn.commit()
 
 
+def load_taas200():
+    conn, db_c = get_pifinder_database()
+    data = Path(utils.astro_data_dir, "TAAS_200.csv")
+    sequence = 0
+    catalog = "Ta2"
+    delete_catalog_from_database(db_c, catalog)
+    print("Loading Taas 200")
+
+    typedict = {
+        "oc": "Open Cluster",
+        "gc": "Glob. Cluster",
+        "gn": "Gaseous Neb.",
+        "?gn": "?Gaseous Neb.",
+        "pn": "Planeta. Neb.",
+        "?pn": "?Planet. Neb.",
+        "dn": "Dark Nebula",
+        "snr": "SN Remnant",
+        "eg": "Galaxy",
+        "gn + oc": "Gas. Neb.+OC",
+        "oc + oc": "OC + OC",
+        "oc + gn": "OC+Gas. Neb.",
+    }
+
+    with open(data, "r") as f:
+        reader = csv.DictReader(f)
+
+        # Iterate over each row in the file
+        for row in reader:
+            sequence = int(row["Nr"])
+            ngc = row["NGC/IC"]
+            other_catalog = []
+            if ngc:
+                if ngc.startswith("IC") or ngc.startswith("B") or ngc.startswith("Col"):
+                    other_catalog.append(ngc)
+                else:
+                    split = ngc.split(";")
+                    for s in split:
+                        other_catalog.append(f"NGC {s}")
+
+            other_names = row["Name"]
+            const = row["Const"]
+            type = typedict[row["Type"]]
+            ra = ra_to_deg(float(row["RA Hr"]), float(row["RA Min"]), 0)
+            dec_deg = row["Dec Deg"]
+            dec_deg = (
+                float(dec_deg[1:]) if dec_deg[0] == "n" else float(dec_deg[1:]) * -1
+            )
+            dec = dec_to_deg(dec_deg, float(row["Dec Min"]), 0)
+            mag = row["Magnitude"]
+            size = row["Size"]
+            desc = row["Description"]
+            nr_stars = row["# Stars"]
+            gc = row["GC Conc or Class"]
+            h400 = row["Herschel 400"]
+            min_ap = row["Min Aperture"]
+            extra = []
+            extra.append(f"{f'Min apert: {min_ap}' if min_ap != '' else ''}")
+            extra.append(f"{f'Nr *:{nr_stars}' if nr_stars != '' else ''}")
+            extra.append(f"{f'GC:{gc}' if gc != '' else ''}")
+            extra.append(f"{f'in Herschel 400' if h400 == 'Y' else ''}")
+            extra = [x for x in extra if x]
+            if len(extra) > 0:
+                extra_desc = "\n" + "; ".join(extra)
+                desc += extra_desc
+
+            if mag == "none":
+                mag = "null"
+
+            q = f"""
+                insert into objects(
+                    catalog,
+                    sequence,
+                    obj_type,
+                    ra,
+                    dec,
+                    const,
+                    size,
+                    mag,
+                    desc
+                )
+                values (
+                    "{catalog}",
+                    {sequence},
+                    "{type}",
+                    {ra},
+                    {dec},
+                    "{const}",
+                    "{size}",
+                    "{mag}",
+                    "{desc}"
+                )
+            """
+            db_c.execute(q)
+
+            # insert the other names
+            insert_names(db_c, catalog, sequence, other_names)
+            for name in other_catalog:
+                insert_names(db_c, catalog, sequence, name)
+
+    conn.commit()
+
+
+def insert_names(db_c, catalog, sequence, name):
+    if name == "":
+        return
+    nameq = f"""
+            insert into names(common_name, catalog, sequence)
+            values ("{name}", "{catalog}", {sequence})
+        """
+    db_c.execute(nameq)
+
+
 def load_caldwell():
-    root_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    db_path = os.path.join(root_dir, "astro_data", "pifinder_objects.db")
-    if not os.path.exists(db_path):
+    db_path = Path(utils.astro_data_dir, "pifinder_objects.db")
+    if not db_path.exists():
         print("DB does not exists")
         return False
 
@@ -390,7 +558,7 @@ def load_caldwell():
     conn.row_factory = sqlite3.Row
     db_c = conn.cursor()
 
-    cal = os.path.join(root_dir, "astro_data", "caldwell.dat")
+    cal = Path(utils.astro_data_dir, "caldwell.dat")
     with open(cal, "r") as df:
         df.readline()
         for l in df:
@@ -458,9 +626,8 @@ def load_ngc_catalog():
     if not, tries to load ngc2000 data from
     ../../astro_data/ngc2000
     """
-    root_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    db_path = os.path.join(root_dir, "astro_data", "pifinder_objects.db")
-    if not os.path.exists(db_path):
+    db_path = Path(utils.astro_data_dir, "pifinder_objects.db")
+    if not db_path.exists():
         print("DB does not exists")
         return False
 
@@ -475,8 +642,8 @@ def load_ngc_catalog():
     # load em up!
     # ngc2000.dat + messier.dat
     ngc_dat_files = [
-        os.path.join(root_dir, "astro_data", "ngc2000", "ngc2000.dat"),
-        os.path.join(root_dir, "astro_data", "messier_objects.dat"),
+        Path(utils.astro_data_dir, "ngc2000", "ngc2000.dat"),
+        Path(utils.astro_data_dir, "messier_objects.dat"),
     ]
     for ngc_dat in ngc_dat_files:
         with open(ngc_dat, "r") as ngc:
@@ -534,8 +701,8 @@ def load_ngc_catalog():
 
     # add records for M objects into objects....
     name_dat_files = [
-        os.path.join(root_dir, "astro_data", "ngc2000", "names.dat"),
-        os.path.join(root_dir, "astro_data", "extra_names.dat"),
+        Path(utils.astro_data_dir, "ngc2000", "names.dat"),
+        Path(utils.astro_data_dir, "extra_names.dat"),
     ]
     for name_dat in name_dat_files:
         with open(name_dat, "r") as names:
@@ -609,7 +776,7 @@ def load_ngc_catalog():
             conn.commit()
 
     # Now add the messier names
-    name_dat = os.path.join(root_dir, "astro_data", "messier_names.dat")
+    name_dat = Path(utils.astro_data_dir, "messier_names.dat")
     with open(name_dat, "r") as names:
         for i, l in enumerate(names):
             ls = l.split("\t")
@@ -630,3 +797,20 @@ def load_ngc_catalog():
 
                 db_c.execute(q)
         conn.commit()
+
+
+if __name__ == "__main__":
+    print("Starting")
+    # execute all functions
+    print("Creating DB")
+    create_logging_tables()
+    print("creating catalog tables")
+    init_catalog_tables()
+    print("loading catalogs")
+    load_collinder()
+    load_taas200()
+    load_sac_asterisms()
+    load_caldwell()
+    load_ngc_catalog()
+    conn, db_c = get_pifinder_database()
+    print_database(conn, db_c)
