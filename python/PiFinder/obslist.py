@@ -7,6 +7,9 @@ observing lists in skylist
 format used by SkySafari
 but supported by other
 tools
+
+see https://www.skysafariastronomy.com/support/faq/skysafari.html
+FAQ #21
 """
 import os
 import sqlite3
