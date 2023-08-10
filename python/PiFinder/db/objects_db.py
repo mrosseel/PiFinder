@@ -7,7 +7,7 @@ import logging
 
 
 class ObjectsDatabase(Database):
-    def __init__(self, db_path=utils.objects_db):
+    def __init__(self, db_path=utils.pifinder_db):
         conn, cursor = self.get_database(db_path)
         super().__init__(conn, cursor, db_path)
         self.cursor.execute("PRAGMA foreign_keys = ON;")
@@ -75,7 +75,7 @@ class ObjectsDatabase(Database):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 object_id INTEGER,
                 image_path TEXT,
-                FOREIGN KEY (object_id) REFERENCES objects(id),
+                FOREIGN KEY (object_id) REFERENCES objects(id)
             );
         """
         )
