@@ -232,4 +232,4 @@ class Starfield:
                             ],
                             fill=(255),
                         )
-        return ret_image.convert("RGB")
+        return ret_image

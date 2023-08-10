@@ -11,31 +11,51 @@ import adafruit_bno055
 
 from scipy.spatial.transform import Rotation
 
-QUEUE_LEN = 50
-AVG_LEN = 2
-MOVE_CHECK_LEN = 10
+from PiFinder import config
+
+QUEUE_LEN = 10
+MOVE_CHECK_LEN = 2
 
 
 class Imu:
     def __init__(self):
         i2c = board.I2C()
         self.sensor = adafruit_bno055.BNO055_I2C(i2c)
-        # self.sensor.mode = adafruit_bno055.IMUPLUS_MODE
-        self.sensor.mode = adafruit_bno055.NDOF_MODE
-        self.sensor.axis_remap = (
-            adafruit_bno055.AXIS_REMAP_Z,
-            adafruit_bno055.AXIS_REMAP_Y,
-            adafruit_bno055.AXIS_REMAP_X,
-            adafruit_bno055.AXIS_REMAP_POSITIVE,
-            adafruit_bno055.AXIS_REMAP_POSITIVE,
-            adafruit_bno055.AXIS_REMAP_POSITIVE,
-        )
+        self.sensor.mode = adafruit_bno055.IMUPLUS_MODE
+        # self.sensor.mode = adafruit_bno055.NDOF_MODE
+        cfg = config.Config()
+        if cfg.get_option("screen_direction") == "flat":
+            self.sensor.axis_remap = (
+                adafruit_bno055.AXIS_REMAP_Y,
+                adafruit_bno055.AXIS_REMAP_X,
+                adafruit_bno055.AXIS_REMAP_Z,
+                adafruit_bno055.AXIS_REMAP_POSITIVE,
+                adafruit_bno055.AXIS_REMAP_POSITIVE,
+                adafruit_bno055.AXIS_REMAP_NEGATIVE,
+            )
+        else:
+            self.sensor.axis_remap = (
+                adafruit_bno055.AXIS_REMAP_Z,
+                adafruit_bno055.AXIS_REMAP_Y,
+                adafruit_bno055.AXIS_REMAP_X,
+                adafruit_bno055.AXIS_REMAP_POSITIVE,
+                adafruit_bno055.AXIS_REMAP_POSITIVE,
+                adafruit_bno055.AXIS_REMAP_POSITIVE,
+            )
         self.quat_history = [(0, 0, 0, 0)] * QUEUE_LEN
-        self.flip_count = 0
+        self.calibration = 0
         self.avg_quat = (0, 0, 0, 0)
         self.__moving = False
-        self.__moving_decay = 0
-        self.calibration = 0
+
+        self.last_sample_time = time.time()
+
+        # Calibration settings
+        self.imu_sample_frequency = 1 / 30
+
+        # First value is delta to exceed between samples
+        # to start moving, second is threshold to fall below
+        # to stop moving.
+        self.__moving_threshold = (0.001, 0.0005)
 
     def quat_to_euler(self, quat):
         if quat[0] + quat[1] + quat[2] + quat[3] == 0:
@@ -53,57 +73,15 @@ class Imu:
         Compares most recent reading
         with past readings
         """
-        diff_list = []
-        # compare last MOVE_CHECK_LEN quats
-        for quat in self.quat_history[-MOVE_CHECK_LEN:]:
-            diff = (
-                abs(quat[0] - self.quat_history[-MOVE_CHECK_LEN][0])
-                + abs(quat[1] - self.quat_history[-MOVE_CHECK_LEN][1])
-                + abs(quat[2] - self.quat_history[-MOVE_CHECK_LEN][2])
-                + abs(quat[3] - self.quat_history[-MOVE_CHECK_LEN][3])
-            )
-            diff_list.append(diff)
-
-        self.__moving = True
-        last_diff = diff_list[0]
-        for diff in diff_list[1:]:
-            if diff <= last_diff:
-                self.__moving_decay -= 1
-                self.__moving = False
-            last_diff = diff
-        if self.__moving:
-            self.__moving_decay = 30
-
-        if self.__moving_decay < 0:
-            return False
-
-        return True
-
-    def flip(self, quat):
-        """
-        Compares most recent reading
-        with past readings and find
-        and filter anomolies
-        """
-        if len(self.quat_history) < QUEUE_LEN:
-            return False
-
-        dif = (
-            abs(quat[0] - self.quat_history[-1][0])
-            + abs(quat[1] - self.quat_history[-1][1])
-            + abs(quat[2] - self.quat_history[-1][2])
-            + abs(quat[3] - self.quat_history[-1][3])
-        )
-        if dif > 0.1:
-            self.flip_count += 1
-            if self.flip_count > 10:
-                return False
-            return True
-        else:
-            self.flip_count = 0
-            return False
+        return self.__moving
 
     def update(self):
+        # check for update frequency
+        if time.time() - self.last_sample_time < self.imu_sample_frequency:
+            return
+
+        self.last_sample_time = time.time()
+
         # Throw out non-calibrated data
         self.calibration = self.sensor.calibration_status[1]
         if self.calibration == 0:
@@ -113,29 +91,38 @@ class Imu:
             print("IMU: Failed to get sensor values")
             return
 
-        if not self.flip(quat):
-            if len(self.quat_history) == QUEUE_LEN:
-                self.quat_history = self.quat_history[1:]
-            self.quat_history.append(quat)
-            self.calc_avg_quat()
+        _quat_diff = []
+        for i in range(4):
+            _quat_diff.append(abs(quat[i] - self.quat_history[-1][i]))
 
-    def calc_avg_quat(self):
-        quat = [0, 0, 0, 0]
-        if not self.__moving:
-            self.avg_quat = self.quat_history[-1]
+        self.__reading_diff = sum(_quat_diff)
 
-        for q in self.quat_history[-AVG_LEN:]:
-            quat[0] += q[0]
-            quat[1] += q[1]
-            quat[2] += q[2]
-            quat[3] += q[3]
+        # This seems to be some sort of defect / side effect
+        # of the integration system in the BNO055
+        # When not moving quat output will vaccilate
+        # by exactly this amount... so filter this out
+        if self.__reading_diff == 0.0078125:
+            self.__reading_diff = 0
+            return
 
-        self.avg_quat = (
-            quat[0] / AVG_LEN,
-            quat[1] / AVG_LEN,
-            quat[2] / AVG_LEN,
-            quat[3] / AVG_LEN,
-        )
+        # Sometimes the quat output will 'flip' and change by 2.0+
+        # from one reading to another.  This is clearly noise or an
+        # artifact, so filter them out
+        if self.__reading_diff > 1.5:
+            self.__reading_diff = 0
+            return
+
+        self.avg_quat = quat
+        if len(self.quat_history) == QUEUE_LEN:
+            self.quat_history = self.quat_history[1:]
+        self.quat_history.append(quat)
+
+        if self.__moving:
+            if self.__reading_diff < self.__moving_threshold[1]:
+                self.__moving = False
+        else:
+            if self.__reading_diff > self.__moving_threshold[0]:
+                self.__moving = True
 
     def get_euler(self):
         return list(self.quat_to_euler(self.avg_quat))
@@ -148,8 +135,8 @@ def imu_monitor(shared_state, console_queue):
         "moving": False,
         "move_start": None,
         "move_end": None,
-        "pos": None,
-        "start_pos": None,
+        "pos": [0, 0, 0],
+        "start_pos": [0, 0, 0],
         "status": 0,
     }
     while True:
@@ -177,4 +164,3 @@ def imu_monitor(shared_state, console_queue):
 
         if shared_state != None and imu_calibrated:
             shared_state.set_imu(imu_data)
-            # pprint(imu_data)

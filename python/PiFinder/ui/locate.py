@@ -4,12 +4,11 @@
 This module contains the Locate module
 
 """
-import datetime
 import time
-import os
 from PIL import ImageFont
+import logging
 
-from PiFinder import integrator, obslist
+from PiFinder import integrator, obslist, config
 from PiFinder.obj_types import OBJ_TYPES
 from PiFinder.ui.base import UIModule
 from PiFinder.ui.fonts import Fonts as fonts
@@ -44,6 +43,7 @@ class UILocate(UIModule):
         self.__catalog_names = self.config_object.get_option("catalogs")
         self.sf_utils = integrator.Skyfield_utils()
         self.font_huge = fonts.huge
+        self.screen_direction = config.Config().get_option("screen_direction")
 
         available_lists = obslist.get_lists()
         self._config_options["Load"]["options"] += available_lists
@@ -147,19 +147,18 @@ class UILocate(UIModule):
         """
         Generates object text
         """
-        if not self.ui_state["target"]:
+        target = self.ui_state["target"]
+        if not target:
             self.object_text = ["No Object Found"]
             return
 
         self.object_text = []
-
-        # Type / Constellation
-        object_type = OBJ_TYPES.get(
-            self.ui_state["target"]["obj_type"], self.ui_state["target"]["obj_type"]
-        )
-        self.object_text.append(
-            f"{object_type: <14} {self.ui_state['target']['const']}"
-        )
+        try:
+            # Type / Constellation
+            object_type = OBJ_TYPES.get(target.obj_type, target.obj_type)
+            self.object_text.append(f"{object_type: <14} {target.const}")
+        except Exception as e:
+            logging.error(f"Error generating object text: {e}, {target}")
 
     def aim_degrees(self):
         """
@@ -179,19 +178,20 @@ class UILocate(UIModule):
                     location["altitude"],
                 )
                 target_alt, target_az = self.sf_utils.radec_to_altaz(
-                    self.ui_state["target"]["ra"],
-                    self.ui_state["target"]["dec"],
+                    self.ui_state["target"].ra,
+                    self.ui_state["target"].dec,
                     dt,
                 )
                 az_diff = target_az - solution["Az"]
                 az_diff = (az_diff + 180) % 360 - 180
+                if self.screen_direction == "flat":
+                    az_diff *= -1
 
                 alt_diff = target_alt - solution["Alt"]
                 alt_diff = (alt_diff + 180) % 360 - 180
 
                 return az_diff, alt_diff
-        else:
-            return None, None
+        return None, None
 
     def active(self):
         try:
@@ -208,7 +208,8 @@ class UILocate(UIModule):
         # Clear Screen
         self.draw.rectangle([0, 0, 128, 128], fill=self.colors.get(0))
 
-        if not self.ui_state["target"]:
+        target = self.ui_state["target"]
+        if not target:
             self.draw.text(
                 (0, 20),
                 "No Target Set",
@@ -218,8 +219,8 @@ class UILocate(UIModule):
             return self.screen_update()
 
         # Target Name
-        line = self.ui_state["target"]["catalog"]
-        line += str(self.ui_state["target"]["sequence"])
+        line = target.catalog_code
+        line += str(target.sequence)
         self.draw.text((0, 20), line, font=self.font_large, fill=self.colors.get(255))
 
         # Target history index
@@ -228,7 +229,7 @@ class UILocate(UIModule):
                 list_name = "Hist"
             else:
                 list_name = "Obsv"
-            line = f"{self.target_index + 1}/{len(self.ui_state['active_list'])}"
+            line = f'{self.target_index + 1}/{len(self.ui_state["active_list"])}'
             line = f"{line : >9}"
             self.draw.text(
                 (72, 18), line, font=self.font_base, fill=self.colors.get(255)

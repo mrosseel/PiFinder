@@ -54,7 +54,10 @@ class KeyboardServer(KeyboardInterface):
             img = Image.new(
                 "RGB", (60, 30), color=(73, 109, 137)
             )  # create an image using PIL
-            img = self.shared_state.screen()
+            try:
+                img = self.shared_state.screen()
+            except (BrokenPipeError, EOFError):
+                pass
             response.content_type = "image/png"  # adjust for your image format
 
             img_byte_arr = io.BytesIO()
@@ -70,5 +73,5 @@ class KeyboardServer(KeyboardInterface):
         self.q.put(key)
 
 
-def run_keyboard(q, shared_state, script_path=None):
-    keyboard = KeyboardServer(q, shared_state)
+def run_keyboard(q, shared_state):
+    KeyboardServer(q, shared_state)

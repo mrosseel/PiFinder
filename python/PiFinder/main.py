@@ -26,8 +26,6 @@ from timezonefinder import TimezoneFinder
 
 
 from luma.core.interface.serial import spi
-from luma.core.render import canvas
-from luma.oled.device import ssd1351
 
 from PiFinder import solver
 from PiFinder import integrator
@@ -84,8 +82,9 @@ def init_display():
 
         # init display  (SPI hardware)
         serial = spi(device=0, port=0)
-        device_serial = ssd1351(serial)
-        display_device = DeviceWrapper(device_serial, RED_BGR)
+        device_serial = ssd1351(serial, rotate=0, bgr=True)
+        device_serial.capabilities(width=128, height=128, rotate=0, mode="RGB")
+        display_device = DeviceWrapper(device_serial, RED_RGB)
     else:
         print("Hardware platform not recognized")
 
@@ -222,14 +221,18 @@ def main(script_name=None):
         # spawn keyboard service....
         console.write("   Keyboard")
         console.update()
-        script_path = None
-        if script_name:
-            script_path = os.path.join(root_dir, "scripts", script_name)
         keyboard_process = Process(
             target=keyboard.run_keyboard,
-            args=(keyboard_queue, shared_state, script_path),
+            args=(keyboard_queue, shared_state),
         )
         keyboard_process.start()
+        if script_name:
+            script_path = f"../scripts/{script_name}.pfs"
+            p = Process(
+                target=keyboard_interface.KeyboardInterface.run_script,
+                args=(script_path, keyboard_queue),
+            )
+            p.start()
 
         # Load last location, set lock to false
         tz_finder = TimezoneFinder()
@@ -415,6 +418,7 @@ def main(script_name=None):
                     keycode = None
 
                 if keycode != None:
+                    # logging.debug(f"Keycode: {keycode}")
                     power_save_warmup = time.time() + get_sleep_timeout(cfg)
                     set_brightness(screen_brightness, cfg)
                     shared_state.set_power_state(1)  # Normal
@@ -474,6 +478,9 @@ def main(script_name=None):
                             if keycode == keyboard_base.LNG_D:
                                 current_module.delete()
                                 console.write("Deleted")
+
+                            if keycode == keyboard_base.LNG_C:
+                                current_module.key_long_c()
 
                             if keycode == keyboard_base.ALT_D:
                                 # Debug snapshot
@@ -620,9 +627,7 @@ def main(script_name=None):
 
 
 if __name__ == "__main__":
-    script_name = None
-    args = sys.argv
-    print("starting main")
+    print("Starting PiFinder ...")
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
@@ -704,12 +709,10 @@ if __name__ == "__main__":
         from PiFinder import keyboard_server as keyboard
 
     if args.log:
-        datenow = datetime.now()
+        datenow = datetime.datetime.now()
         filehandler = f"PiFinder-{datenow:%Y%m%d-%H_%M_%S}.log"
         fh = logging.FileHandler(filehandler)
         fh.setLevel(logger.level)
         logger.addHandler(fh)
-    if args.script:
-        script_name = args.script
 
-    main(script_name)
+    main(args.script)
