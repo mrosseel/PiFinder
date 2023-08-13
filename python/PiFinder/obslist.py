@@ -99,7 +99,7 @@ def read_list(name):
             l = l.strip()
             if l == "SkyObject=BeginObject":
                 if in_object:
-                    print("Encountered object start while in object.  File is corrupt")
+                    print("Encountered object start while in object. File is corrupt")
                     return {
                         "result": "error",
                         "objects_parsed": objects_parsed,
