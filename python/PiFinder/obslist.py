@@ -7,6 +7,9 @@ observing lists in skylist
 format used by SkySafari
 but supported by other
 tools
+
+see https://www.skysafariastronomy.com/support/faq/skysafari.html
+FAQ #21
 """
 import os
 import sqlite3
@@ -87,7 +90,7 @@ def read_list(name):
             l = l.strip()
             if l == "SkyObject=BeginObject":
                 if in_object:
-                    print("Encountered object start while in object.  File is corrupt")
+                    print("Encountered object start while in object. File is corrupt")
                     return {
                         "result": "error",
                         "objects_parsed": objects_parsed,
