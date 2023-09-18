@@ -77,7 +77,9 @@ class Imu:
 
     def update(self):
         # check for update frequency
-        if time.time() - self.last_sample_time < self.imu_sample_frequency:
+        elapsed = time.time() - self.last_sample_time
+        if elapsed < self.imu_sample_frequency:
+            time.sleep(max(0, self.imu_sample_frequency - elapsed))
             return
 
         self.last_sample_time = time.time()
@@ -124,11 +126,16 @@ class Imu:
             if self.__reading_diff > self.__moving_threshold[0]:
                 self.__moving = True
 
+        return True
+
     def get_euler(self):
         return list(self.quat_to_euler(self.avg_quat))
 
 
 def imu_monitor(shared_state, console_queue):
+    """ this function runs in a process, updating the imu and
+    setting the info in the shared state
+    """
     imu = Imu()
     imu_calibrated = False
     imu_data = {
@@ -140,27 +147,28 @@ def imu_monitor(shared_state, console_queue):
         "status": 0,
     }
     while True:
-        imu.update()
-        imu_data["status"] = imu.calibration
-        if imu.moving():
-            if imu_data["moving"] == False:
-                # print("IMU: move start")
-                imu_data["moving"] = True
-                imu_data["start_pos"] = imu_data["pos"]
-                imu_data["move_start"] = time.time()
-            imu_data["pos"] = imu.get_euler()
-        else:
-            if imu_data["moving"] == True:
-                # If wer were moving and we now stopped
-                # print("IMU: move end")
-                imu_data["moving"] = False
+        update = imu.update()
+        if update:
+            imu_data["status"] = imu.calibration
+            if imu.moving():
+                if imu_data["moving"] == False:
+                    # print("IMU: move start")
+                    imu_data["moving"] = True
+                    imu_data["start_pos"] = imu_data["pos"]
+                    imu_data["move_start"] = time.time()
                 imu_data["pos"] = imu.get_euler()
-                imu_data["move_end"] = time.time()
+            else:
+                if imu_data["moving"] == True:
+                    # If wer were moving and we now stopped
+                    # print("IMU: move end")
+                    imu_data["moving"] = False
+                    imu_data["pos"] = imu.get_euler()
+                    imu_data["move_end"] = time.time()
 
-        if imu_calibrated == False:
-            if imu_data["status"] == 3:
-                imu_calibrated = True
-                console_queue.put("IMU: NDOF Calibrated!")
+            if imu_calibrated == False:
+                if imu_data["status"] == 3:
+                    imu_calibrated = True
+                    console_queue.put("IMU: NDOF Calibrated!")
 
-        if shared_state != None and imu_calibrated:
-            shared_state.set_imu(imu_data)
+            if shared_state != None and imu_calibrated:
+                shared_state.set_imu(imu_data)

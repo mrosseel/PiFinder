@@ -132,6 +132,7 @@ def integrator(shared_state, solver_queue, console_queue):
         last_image_solve = None
         last_solved = None
         last_solve_time = time.time()
+        last_imu_pos = None
         while True:
             if shared_state.power_state() == 0:
                 time.sleep(0.5)
@@ -186,6 +187,7 @@ def integrator(shared_state, solver_queue, console_queue):
                         # calc new alt/az
                         lis_imu = last_image_solve["imu_pos"]
                         imu_pos = imu["pos"]
+                        
                         if lis_imu != None and imu_pos != None:
                             alt_offset = imu_pos[IMU_ALT] - lis_imu[IMU_ALT]
                             if flip_alt_offset:
@@ -210,6 +212,8 @@ def integrator(shared_state, solver_queue, console_queue):
                             if True:
                                 solved["solve_time"] = time.time()
                                 solved["solve_source"] = "IMU"
+            else:
+                solved["solve_source"] = "IMU"
 
             # Is the solution new?
             if solved["RA"] and solved["solve_time"] > last_solve_time:
