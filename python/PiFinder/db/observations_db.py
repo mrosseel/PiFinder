@@ -1,13 +1,20 @@
-import PiFinder.utils as utils
+import json
 from sqlite3 import Connection, Cursor, Error
 from typing import Tuple
 from PiFinder.db.db import Database
+import PiFinder.utils as utils
+from pathlib import Path
 
 
 class ObservationsDatabase(Database):
-    def __init__(self, db_path=utils.observations_db):
+    def __init__(self, db_path: Path = utils.observations_db):
+        new_db = False
+        if not db_path.exists():
+            new_db = True
         conn, cursor = self.get_database(db_path)
         super().__init__(conn, cursor, db_path)
+        if new_db:
+            self.create_tables()
 
     def create_tables(self, force_delete: bool = False):
         """
@@ -105,13 +112,13 @@ class ObservationsDatabase(Database):
                 "obs_time": obs_time,
                 "catalog": catalog,
                 "sequence": sequence,
-                "solution": solution,
-                "notes": notes,
+                "solution": json.dumps(solution),
+                "notes": json.dumps(notes),
             },
         )
-        self.db.conn.commit()
+        self.conn.commit()
 
-        observation_id = self.db_cursor.execute(
+        observation_id = self.cursor.execute(
             "select last_insert_rowid() as id"
         ).fetchone()["id"]
         return observation_id
