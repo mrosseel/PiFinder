@@ -108,7 +108,8 @@ def set_keypad_brightness(percentage: float):
     if percentage < 0 or percentage > 100:
         logging.error("Invalid percentage for keypad brightness")
         percentage = max(0, min(100, percentage))
-    keypad_pwm.change_duty_cycle(percentage)
+    if keypad_pwm:
+        keypad_pwm.change_duty_cycle(percentage)
 
 
 def set_brightness(level, cfg):
@@ -231,6 +232,7 @@ def main(script_name=None, has_server=False, show_fps=False):
         "target": None,
         "message_timeout": 0,
         "show_fps": show_fps,
+        "hint_timeout": cfg.get_option("hint_timeout"),
     }
     ui_state["active_list"] = ui_state["history_list"]
 
@@ -401,7 +403,7 @@ def main(script_name=None, has_server=False, show_fps=False):
 
         # What is the highest index for observing modes
         # vs status/debug modes accessed by alt-A
-        ui_observing_modes = 3
+        ui_observing_modes = 4
         ui_mode_index = 4
         logging_mode_index = 7
 

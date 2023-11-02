@@ -10,6 +10,7 @@ import socket
 
 from PiFinder.ui.base import UIModule
 from PiFinder import sys_utils
+from PiFinder import calc_utils
 from PiFinder import utils
 from PiFinder.ui.ui_utils import TextLayouter, SpaceCalculatorFixed
 from PiFinder.ui.fonts import Fonts as fonts
@@ -41,6 +42,12 @@ class UIStatus(UIModule):
             "options": ["Off", "30s", "1m", "10m", "30m"],
             "callback": "set_screen_off_timeout",
         },
+        "Hint Time": {
+            "type": "enum",
+            "value": "2s",
+            "options": ["Off", "2s", "4s", "On"],
+            "callback": "set_hint_timeout",
+        },
         "WiFi Mode": {
             "type": "enum",
             "value": "UNK",
@@ -52,12 +59,6 @@ class UIStatus(UIModule):
             "value": "",
             "options": ["right", "left", "flat", "CANCEL"],
             "callback": "side_switch",
-        },
-        "Restart": {
-            "type": "enum",
-            "value": "",
-            "options": ["PiFi", "CANCEL"],
-            "callback": "restart",
         },
         "Shutdown": {
             "type": "enum",
@@ -113,6 +114,9 @@ class UIStatus(UIModule):
         self._config_options["Screen Off"]["value"] = self.config_object.get_option(
             "screen_off_timeout"
         )
+        self._config_options["Hint Time"]["value"] = self.config_object.get_option(
+            "hint_timeout"
+        )
         self._config_options["Key Brit"]["value"] = self.config_object.get_option(
             "keypad_brightness"
         )
@@ -148,6 +152,11 @@ class UIStatus(UIModule):
 
     def set_sleep_timeout(self, option):
         self.config_object.set_option("sleep_timeout", option)
+        return False
+
+    def set_hint_timeout(self, option):
+        self.config_object.set_option("hint_timeout", option)
+        self.ui_state["hint_timeout"] = option
         return False
 
     def set_screen_off_timeout(self, option):
@@ -213,8 +222,10 @@ class UIStatus(UIModule):
                 + str(solution["solve_source"][0])
                 + f" {stars_matched: >2}"
             )
-
-            self.status_dict["RA/DEC"] = f"{solution['RA'] :.2f}/{solution['Dec'] :.2f}"
+            hh, mm, _ = calc_utils.ra_to_hms(solution["RA"])
+            self.status_dict[
+                "RA/DEC"
+            ] = f"{hh:02.0f}h{mm:02.0f}m/{solution['Dec'] :.2f}"
 
             if solution["Az"]:
                 self.status_dict[

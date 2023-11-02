@@ -8,6 +8,7 @@ Protocol based on Meade LX200
 """
 import socket
 from math import modf
+from PiFinder import calc_utils
 
 
 def get_telescope_ra(shared_state):
@@ -20,12 +21,7 @@ def get_telescope_ra(shared_state):
     if not solution:
         return "00:00:01"
 
-    ra = solution["RA"]
-    if ra < 0.0:
-        ra = ra + 360
-    mm, hh = modf(ra / 15.0)
-    _, mm = modf(mm * 60.0)
-    ss = round(_ * 60.0)
+    hh, mm, ss = calc_utils.ra_to_hms(solution["RA"])
     return f"{hh:02.0f}:{mm:02.0f}:{ss:02.0f}"
 
 
@@ -73,8 +69,17 @@ def run_server(shared_state, _):
         while True:
             client_socket, address = server_socket.accept()
             while True:
-                in_data = client_socket.recv(1024).decode()
+                try:
+                    in_data = client_socket.recv(1024).decode()
+                except ConnectionResetError:
+                    client_socket.close()
+                    out_data = None
+                    in_data = None
+
                 if in_data:
+                    if in_data == "\x06":
+                        # Ack, reply with 'A' for alt-az mode
+                        out_data = "A"
                     if in_data.startswith(":"):
                         # command
                         command = in_data[1:].split("#")[0]
@@ -84,11 +89,15 @@ def run_server(shared_state, _):
                         else:
                             print("Unkown Command:", in_data)
                             out_data = not_implemented(shared_state)
+
+                        if out_data:
+                            # Command replies should be terminated with #
+                            out_data += "#"
                 else:
                     break
 
                 if out_data:
-                    client_socket.send(bytes(out_data + "#", "utf-8"))
+                    client_socket.send(bytes(out_data, "utf-8"))
                     out_data = None
             client_socket.close()
 
