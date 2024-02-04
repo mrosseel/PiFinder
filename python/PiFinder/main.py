@@ -40,6 +40,7 @@ from PiFinder import pos_server
 from PiFinder import utils
 from PiFinder import server
 from PiFinder import keyboard_interface
+from PiFinder.alpaca import app
 
 from PiFinder.ui.chart import UIChart
 from PiFinder.ui.preview import UIPreview
@@ -287,6 +288,12 @@ def main(script_name=None, show_fps=False):
             args=(keyboard_queue, gps_queue, shared_state),
         )
         server_process.start()
+
+        alpaca_process = Process(
+            target=app.main,
+            args=(shared_state),
+        )
+        alpaca_process.start()
 
         # Load last location, set lock to false
         tz_finder = TimezoneFinder()
