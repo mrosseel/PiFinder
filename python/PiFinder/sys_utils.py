@@ -1,8 +1,9 @@
 import glob
 import re
 from typing import Dict, Any
-import sh
+
 try:
+    import sh
     from sh import wpa_cli, unzip, su, passwd
     REAL_SYS_UTILS = True
 except ImportError:
