@@ -77,6 +77,7 @@ def solver(
 
     while True:
         logger.info("Starting Solver Loop")
+        time.sleep(.1)
         # Start cedar detect server
         try:
             cedar_detect = cedar_detect_client.CedarDetectClient(
@@ -124,8 +125,13 @@ def solver(
                 # which might be from the IMU
                 try:
                     last_image_metadata = shared_state.last_image_metadata()
-                except (BrokenPipeError, ConnectionResetError) as e:
+                except (EOFError, BrokenPipeError, ConnectionResetError) as e:
                     logger.error(f"Lost connection to shared state manager: {e}")
+                    break
+                except Exception as e:
+                    logger.error(f"Unexpected error accessing shared state: {e}")
+                    logger.exception(e)
+                    break # Exit the inner loop
                 if (
                     last_image_metadata["exposure_end"] > (last_solve_time)
                     and last_image_metadata["imu_delta"] < 1
@@ -135,13 +141,23 @@ def solver(
                     np_image = np.asarray(img, dtype=np.uint8)
 
                     t0 = precision_timestamp()
-                    if cedar_detect is None:
-                        # Use old tetr3 centroider
+                    try:
+                        if cedar_detect:
+                            centroids = cedar_detect.extract_centroids(
+                                np_image, sigma=8, max_size=10, use_binned=True
+                            )
+                        else:
+                            # Fallback to old method
+                            centroids = tetra3.get_centroids_from_image(np_image)
+                    except ConnectionRefusedError as rpc_e:
+                        logger.error(f"Cedar-Detect connection failed: {rpc_e}. Falling back.")
+                        # Option 1: Fallback to old centroider for this frame
                         centroids = tetra3.get_centroids_from_image(np_image)
-                    else:
-                        centroids = cedar_detect.extract_centroids(
-                            np_image, sigma=8, max_size=10, use_binned=True
-                        )
+                    except Exception as detect_e:
+                        logger.error(f"Error during centroid detection: {detect_e}")
+                        logger.exception(detect_e)
+                        centroids = [] # Ensure centroids is empty list to skip solving
+
                     t_extract = (precision_timestamp() - t0) * 1000
                     logger.debug(
                         "File %s, extracted %d centroids in %.2fms"
