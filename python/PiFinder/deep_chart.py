@@ -14,7 +14,7 @@ Features:
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Generator, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -31,13 +31,13 @@ _chart_generator_instance = None
 def get_chart_generator(config, shared_state):
     """Get or create the global chart generator singleton"""
     global _chart_generator_instance
-    logger.info(f">>> get_chart_generator() called, instance exists: {_chart_generator_instance is not None}")
+    logger.debug(f">>> get_chart_generator() called, instance exists: {_chart_generator_instance is not None}")
     if _chart_generator_instance is None:
         logger.info(">>> Creating new DeepChartGenerator instance...")
         _chart_generator_instance = DeepChartGenerator(config, shared_state)
         logger.info(f">>> DeepChartGenerator created, state: {_chart_generator_instance.get_catalog_state()}")
     else:
-        logger.info(f">>> Returning existing instance, state: {_chart_generator_instance.get_catalog_state()}")
+        logger.debug(f">>> Returning existing instance, state: {_chart_generator_instance.get_catalog_state()}")
     return _chart_generator_instance
 
 
@@ -63,6 +63,7 @@ class DeepChartGenerator:
         self.shared_state = shared_state
         self.catalog = None
         self.chart_cache = {}
+        self._lm_cache = None  # Cache (sqm, eyepiece_id, lm) to avoid recalculation
 
         # Initialize font for text overlays
         font_path = Path(Path.cwd(), "../fonts/RobotoMonoNerdFontMono-Bold.ttf")
@@ -83,7 +84,7 @@ class DeepChartGenerator:
         Ensure catalog is loading or loaded
         Triggers background load if needed
         """
-        logger.info(f">>> ensure_catalog_loading() called, catalog is None: {self.catalog is None}")
+        logger.debug(f">>> ensure_catalog_loading() called, catalog is None: {self.catalog is None}")
         if self.catalog is None:
             logger.info(">>> Calling initialize_catalog()...")
             self.initialize_catalog()
@@ -125,7 +126,7 @@ class DeepChartGenerator:
 
     def generate_chart(
         self, catalog_object, resolution: Tuple[int, int], burn_in: bool = True, display_class=None, roll=None
-    ) -> Optional[Image.Image]:
+    ) -> Generator[Optional[Image.Image], None, None]:
         """
         Generate chart for object at current equipment settings
 
@@ -151,7 +152,7 @@ class DeepChartGenerator:
         if cache_key in self.chart_cache:
             # Return cached base image (without crosshair)
             # Crosshair will be added by add_pulsating_crosshair() each frame
-            logger.info(f"Chart cache HIT for {cache_key}")
+            logger.debug(f"Chart cache HIT for {cache_key}")
             yield self.chart_cache[cache_key]
             return
 
@@ -167,26 +168,29 @@ class DeepChartGenerator:
 
         sqm = self.shared_state.sqm()
         mag_limit_calculated = self.get_limiting_magnitude(sqm)
-        # For display, keep the calculated value (may be >17)
         # For query, cap at catalog max
         mag_limit_query = min(mag_limit_calculated, 17.0)
+        
+        logger.info(f">>> Mag Limit: calculated={mag_limit_calculated:.2f}, query={mag_limit_query:.2f}, sqm={sqm.value if sqm else 'None'}")
 
-        # Query stars
+        # Query stars PROGRESSIVELY (bright to faint)
+        # This is a generator that yields partial results as each magnitude band loads
         import time
         t0 = time.time()
-        stars = self.catalog.get_stars_for_fov(
-            ra_deg=catalog_object.ra,
-            dec_deg=catalog_object.dec,
-            fov_deg=fov,
-            mag_limit=mag_limit_query,
-        )
-        t1 = time.time()
 
         logger.info(
             f"Chart for {catalog_object.catalog_code}{catalog_object.sequence}: "
             f"Center RA={catalog_object.ra:.4f}° Dec={catalog_object.dec:.4f}°, "
             f"FOV={fov:.4f}°, Roll={roll if roll is not None else 0:.1f}°, "
-            f"{len(stars)} stars (query: {(t1-t0)*1000:.1f}ms)"
+            f"Starting PROGRESSIVE loading (mag_limit={mag_limit_query:.1f})"
+        )
+
+        # Use progressive loading to show bright stars first
+        stars_generator = self.catalog.get_stars_for_fov_progressive(
+            ra_deg=catalog_object.ra,
+            dec_deg=catalog_object.dec,
+            fov_deg=fov,
+            mag_limit=mag_limit_query,
         )
 
         # Calculate rotation angle for roll / Newtonian orientation
@@ -197,51 +201,72 @@ class DeepChartGenerator:
         if roll is not None:
             image_rotate += roll
 
-        # Render chart with rotation applied to star coordinates
-        t2 = time.time()
-        image = self.render_chart(
-            stars, catalog_object.ra, catalog_object.dec, fov, resolution, mag, image_rotate, mag_limit_query
-        )
-        t3 = time.time()
-        logger.info(f"Chart rendering: {(t3-t2)*1000:.1f}ms")
+        # Progressive rendering: Yield image after each magnitude band loads
+        final_image = None
+        for stars, is_complete in stars_generator:
+            t_render_start = time.time()
 
-        # Add FOV circle BEFORE text overlays so it appears behind them
-        if burn_in and display_class is not None:
-            draw = ImageDraw.Draw(image)
-            width, height = display_class.resolution
-            cx, cy = width / 2.0, height / 2.0
-            radius = min(width, height) / 2.0 - 2  # Leave 2 pixel margin
-            marker_color = display_class.colors.get(64)  # Subtle but visible
-            bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-            draw.ellipse(bbox, outline=marker_color, width=1)
-
-        # Add overlays (using shared utility)
-        if burn_in and display_class is not None:
-            from PiFinder.image_utils import add_image_overlays
-
-            logger.info(f"Adding overlays: burn_in={burn_in}, LM={mag_limit_calculated:.1f}")
-            image = add_image_overlays(
-                image,
-                display_class,
-                fov,
-                mag,
-                equipment.active_eyepiece,
-                burn_in=True,
-                limiting_magnitude=mag_limit_calculated,  # Pass uncapped value for display
+            # Render chart with rotation applied to star coordinates
+            image = self.render_chart(
+                stars, catalog_object.ra, catalog_object.dec, fov, resolution, mag, image_rotate, mag_limit_query
             )
 
-        # Cache result (limit cache size to 10 charts)
-        self.chart_cache[cache_key] = image
-        if len(self.chart_cache) > 10:
-            # Remove oldest
-            oldest = next(iter(self.chart_cache))
-            del self.chart_cache[oldest]
+            # Add FOV circle BEFORE text overlays so it appears behind them
+            if burn_in and display_class is not None:
+                draw = ImageDraw.Draw(image)
+                width, height = display_class.resolution
+                cx, cy = width / 2.0, height / 2.0
+                radius = min(width, height) / 2.0 - 2  # Leave 2 pixel margin
+                marker_color = display_class.colors.get(64)  # Subtle but visible
+                bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+                draw.ellipse(bbox, outline=marker_color, width=1)
 
-        return image
+            # Add overlays (using shared utility)
+            if burn_in and display_class is not None:
+                from PiFinder.image_utils import add_image_overlays
+
+                image = add_image_overlays(
+                    image,
+                    display_class,
+                    fov,
+                    mag,
+                    equipment.active_eyepiece,
+                    burn_in=True,
+                    limiting_magnitude=mag_limit_calculated,  # Pass uncapped value for display
+                )
+
+            t_render_end = time.time()
+            logger.info(
+                f"PROGRESSIVE: Rendered {len(stars)} stars in {(t_render_end-t_render_start)*1000:.1f}ms "
+                f"(complete={is_complete}, mag_limit={mag_limit_query:.1f})"
+            )
+
+            final_image = image
+
+            # Yield intermediate result (allows UI to update)
+            if not is_complete:
+                yield image
+            # If complete, will yield final image after loop
+
+        # Final yield with complete image
+        t1 = time.time()
+        logger.info(f"Chart complete: {(t1-t0)*1000:.1f}ms total")
+
+        # Cache result (limit cache size to 10 charts)
+        if final_image is not None:
+            self.chart_cache[cache_key] = final_image
+            if len(self.chart_cache) > 10:
+                # Remove oldest
+                oldest = next(iter(self.chart_cache))
+                del self.chart_cache[oldest]
+
+            yield final_image
+        else:
+            yield None
 
     def render_chart(
         self,
-        stars,
+        stars: np.ndarray,
         center_ra: float,
         center_dec: float,
         fov: float,
@@ -255,7 +280,7 @@ class DeepChartGenerator:
         Uses fast vectorized stereographic projection
 
         Args:
-            stars: List of (ra, dec, mag) tuples
+            stars: Numpy array (N, 3) of (ra, dec, mag)
             center_ra: Center RA in degrees
             center_dec: Center Dec in degrees
             fov: Field of view in degrees
@@ -274,6 +299,8 @@ class DeepChartGenerator:
         image_array = np.zeros((height, width, 3), dtype=np.uint8)
         image = Image.new("RGB", (width, height), (0, 0, 0))
         draw = ImageDraw.Draw(image)
+        
+        logger.info(f"Render Chart: {len(stars)} stars input, center=({center_ra:.4f}, {center_dec:.4f}), fov={fov:.4f}, res={resolution}")
 
         if len(stars) == 0:
             # Still draw crosshair even if no stars
@@ -286,12 +313,13 @@ class DeepChartGenerator:
 
         # Convert to numpy arrays for vectorized operations
         t1 = time.time()
-        stars_array = np.array(stars)
+        # stars is already a numpy array (N, 3)
+        stars_array = stars
         ra_arr = stars_array[:, 0]
         dec_arr = stars_array[:, 1]
         mag_arr = stars_array[:, 2]
         t2 = time.time()
-        logger.debug(f"  Array conversion: {(t2-t1)*1000:.1f}ms")
+        # logger.debug(f"  Array conversion: {(t2-t1)*1000:.1f}ms")
 
         # Fast stereographic projection (vectorized)
         # Convert degrees to radians
@@ -367,6 +395,8 @@ class DeepChartGenerator:
         mag_visible = mag_arr[mask]
         ra_visible = ra_arr[mask]
         dec_visible = dec_arr[mask]
+        
+        logger.info(f"Render Chart: {len(x_visible)} stars visible on screen (of {len(stars)} total)")
 
         # Scale brightness based on magnitude range in current field
         # Brightest star in field → 255, faintest → 50
@@ -423,50 +453,12 @@ class DeepChartGenerator:
         t_end = time.time()
         logger.debug(f"  Total render time: {(t_end-t_start)*1000:.1f}ms")
 
+        # Tag image as a deep chart (not a loading placeholder)
+        # This enables the correct marking menu in UIObjectDetails
+        image.is_loading_placeholder = False  # type: ignore[attr-defined]
+
         return image
 
-    def add_pulsating_crosshair(self, image: Image.Image) -> Image.Image:
-        """
-        Add pulsating crosshair to center of image
-        Called each frame to animate - does not modify original image
-
-        Args:
-            image: Base chart image (will be copied)
-
-        Returns:
-            New image with crosshair overlay
-        """
-        import time
-
-        # Copy image so we don't modify the cached version
-        result = image.copy()
-        width, height = result.size
-        draw = ImageDraw.Draw(result)
-
-        # Center position
-        cx, cy = width / 2.0, height / 2.0
-
-        # Pulsate crosshair: full cycle every 2 seconds
-        pulse_period = 2.0  # seconds
-        t = time.time() % pulse_period
-        # Sine wave for smooth pulsation (0.5 to 1.0 range)
-        pulse_factor = 0.5 + 0.5 * np.sin(2 * np.pi * t / pulse_period)
-
-        # Size pulsates between 3 and 7 pixels
-        outer = int(3 + 4 * pulse_factor)
-        inner = 2  # Fixed gap
-
-        # Color pulsates in brightness (32 to 96)
-        color_intensity = int(32 + 64 * pulse_factor)
-        marker_color = (color_intensity, 0, 0)
-
-        # Crosshair outline (4 short lines with gap in middle)
-        draw.line([cx - outer, cy, cx - inner, cy], fill=marker_color, width=1)  # Left
-        draw.line([cx + inner, cy, cx + outer, cy], fill=marker_color, width=1)  # Right
-        draw.line([cx, cy - outer, cx, cy - inner], fill=marker_color, width=1)  # Top
-        draw.line([cx, cy + inner, cx, cy + outer], fill=marker_color, width=1)  # Bottom
-
-        return result
 
     def _draw_star_antialiased_fast(self, image_array, ix, iy, fx, fy, intensity):
         """
@@ -601,7 +593,27 @@ class DeepChartGenerator:
         Returns:
             Limiting magnitude value
         """
+        # Build cache key from sqm, telescope, and eyepiece focal lengths
+        # Round SQM to 1 decimal to avoid floating point comparison issues
+        equipment = self.config.equipment
+        telescope = equipment.active_telescope
+        eyepiece = equipment.active_eyepiece
+
+        # Cache key includes all factors that affect LM calculation
+        telescope_fl = telescope.focal_length_mm if telescope else None
+        telescope_aperture = telescope.aperture_mm if telescope else None
+        eyepiece_fl = eyepiece.focal_length_mm if eyepiece else None
+        sqm_value = round(sqm.value, 1) if sqm and hasattr(sqm, 'value') and sqm.value else None
+
+        # Include config mode and fixed value in cache key to handle mode switching
         lm_mode = self.config.get_option("obj_chart_lm_mode")
+        lm_fixed = self.config.get_option("obj_chart_lm_fixed")
+        
+        cache_key = (sqm_value, telescope_aperture, telescope_fl, eyepiece_fl, lm_mode, lm_fixed)
+
+        # Check cache - return cached value without logging
+        if self._lm_cache is not None and self._lm_cache[0] == cache_key:
+            return self._lm_cache[1]
 
         if lm_mode == "fixed":
             # Use fixed limiting magnitude from config
@@ -609,14 +621,19 @@ class DeepChartGenerator:
             try:
                 lm = float(lm)
                 logger.info(f"Using fixed LM from config: {lm:.1f}")
+                self._lm_cache = (cache_key, lm)
                 return lm
             except (ValueError, TypeError):
                 # Invalid fixed value, fall back to auto
                 logger.warning(f"Invalid fixed LM value: {lm}, falling back to auto")
-                return self.calculate_limiting_magnitude(sqm)
+                lm = self.calculate_limiting_magnitude(sqm)
+                self._lm_cache = (cache_key, lm)
+                return lm
         else:
             # Auto mode: calculate based on equipment and sky brightness
-            return self.calculate_limiting_magnitude(sqm)
+            lm = self.calculate_limiting_magnitude(sqm)
+            self._lm_cache = (cache_key, lm)
+            return lm
 
     def calculate_limiting_magnitude(self, sqm) -> float:
         """
