@@ -8,7 +8,6 @@ Introduction and Overview
 
 Welcome to the PiFinder build guide!  This guide is split into three main parts, one for building the :ref:`UI Board<build_guide:pifinder ui hat>` with Screen and Buttons, a section related to :ref:`3d printing<build_guide:printed parts>` and preparing the case parts, and one for :ref:`final assembly<build_guide:assembly>`.   Along with these sections, please consult the :doc:`Bill of Materials<BOM>` for a full list of parts required and reach out with any questions via `email <mailto:info@pifinder.io>`_ or `discord <https://discord.gg/Nk5fHcAtWD>`_
 
-If you've received a kit with an assembled UI Board + 3d Parts, you can jump right to the :ref:`final assembly<build_guide:assembly>`.  Otherwise, fire up that 3d printer and get the :ref:`parts printing<build_guide:printing>` while you work to assemble the UI Hat.
 
 PiFinder UI Hat
 ========================
@@ -45,7 +44,7 @@ are wildly out of place, you can heat up the solder on the one leg and adjust.
 
 .. image:: images/build_guide/ui_module_4.jpeg
 
-When satisfied, solder the remaining legs and clip the leads
+When satisfied, solder the remaining legs and clip the leads up to a single pair. In the next section we are now going to check if the LEDs work before moving on. If you leave a pair of legs long, you can use them to power the backlight for testing.
 
 .. image:: images/build_guide/ui_module_5.jpeg
 
@@ -53,6 +52,14 @@ The two resistors and transitor are next.  R2 is the vertical oriented 330ohm pa
 
 .. image:: images/build_guide/ui_module_6a.jpeg
 
+Testing the Backlight
+______________________________________
+
+Using a CR2032 (any 3V coin cell will do) battery, you can test the backlight now (and LEDs).  Connect the positive part of the battery to the longer pin of LED and the negative part of the battery to the shorter pin, as demonstrated in the following picture with a single LED. This also works with all the LEDs as they are connected in parallel on the board. Once you connect the battery, all the LEDs should light up: 
+
+.. image:: images/build_guide/test_leds_1.jpeg
+
+Replace the LEDs, which are not working properly before proceeding.
 
 Switches
 ------------------------
@@ -160,6 +167,18 @@ When you are ready, solder the screen in place.  Do one pin first and check it a
 GPS
 ------------------
 
+.. danger::
+   The :ref:`Testing the Backlight<build_guide:testing the backlight>` step should be carried out before soldering on the GPS unit. The GPS unit will block access to some LED pins and will need to be removed before replacing the blocked LEDs. Removing the GPS unit is a difficult operation in which you might destroy the PCB. It has happened to us. Make sure the LEDs are working nicely before proceeding. 
+   
+   If you need to desolder the GPS unit later, be very careful and patient. We recommend using a desoldering pump, if you need to do it.
+
+
+.. caution::
+   Note that if you want to test the switches, you can leave out the GPS unit entirely until the end as well, since it also blocks access to some switch pins. The GPIO connector for connecting the hat to the Raspberry Pi will then make this awkward. 
+   
+   This is not recommended: While the LEDs have given us problems in the past, the switches have usually been rock solid.
+
+
 The last active component is the GPS module.  It goes component side up so you can access the antenna plug.  Check the photo below and solder it securely.
 
 .. image:: images/build_guide/ui_module_15.jpeg
@@ -199,6 +218,10 @@ part can have force applied as the hat is installed and removed.
 After you have all the pins soldrerd, it's a good time to insert the SD card and power it up to double check everything is working
 
 .. image:: images/build_guide/ui_module_18.jpeg
+
+Once it started completely, you will be greeted with :ref:`"the menu"<user_guide:the menu system>`. You can now use the buttons below the screen to navigate. See the faceplate for button functions.
+
+Navigate to the ``Tools > Status`` :ref:`screen<user_guide:status screen>` and verify that the IMU is detected properly: The lines displaying "IMU" in the status screen should show some numbers. Then navigate to the ``Objects > Name Search`` entry and use it to test the keypad to enter a few letters of an object name.  Congratulations, the keypad is working properly.
 
 There you go!  The PiFinder hat is fully assembled and you can move on to printing your parts or :ref:`final assembly<build_guide:assembly>`
 
