@@ -274,11 +274,15 @@ def shutdown() -> None:
 def update_software():
     """
     Uses systemctl to git pull and then restart
-    service
+    service.  Returns True on success, False on failure.
     """
     logger.info("SYS: Running update")
-    sh.bash("/home/pifinder/PiFinder/pifinder_update.sh")
-    return True
+    try:
+        sh.bash("/home/pifinder/PiFinder/pifinder_update.sh")
+        return True
+    except sh.ErrorReturnCode as e:
+        logger.error(f"SYS: Update failed with exit code {e.exit_code}: {e.stderr}")
+        return False
 
 
 def verify_password(username, password):
@@ -409,3 +413,57 @@ def update_gpsd_config(baud_rate: int) -> None:
     except Exception as e:
         logger.error(f"SYS: Error updating GPSD config: {e}")
         raise
+
+
+MIGRATION_PROGRESS_FILE = "/tmp/nixos_migration_progress"
+MIGRATION_SCRIPT = "/home/pifinder/PiFinder/python/scripts/nixos_migration.sh"
+
+
+def start_nixos_migration(version_info: dict) -> None:
+    """
+    Start the NixOS migration process in the background.
+
+    Runs nixos_migration.sh which handles download, backup,
+    initramfs staging, and prepares for reboot.
+
+    Args:
+        version_info: Dict with migration_url, migration_sha256, etc.
+    """
+    url = version_info.get("migration_url", "")
+    sha256 = version_info.get("migration_sha256", "")
+    if not url or not sha256:
+        raise ValueError("Missing migration_url or migration_sha256")
+
+    logger.info(f"SYS: Starting NixOS migration to {version_info.get('version', '?')}")
+
+    import json
+    with open(MIGRATION_PROGRESS_FILE, "w") as f:
+        json.dump({"percent": 0, "status": "Starting..."}, f)
+
+    try:
+        sh.bash(
+            MIGRATION_SCRIPT,
+            url,
+            sha256,
+            MIGRATION_PROGRESS_FILE,
+            _bg=True,
+            _bg_exc=False,
+        )
+    except Exception as e:
+        logger.error(f"SYS: Migration failed to start: {e}")
+        raise
+
+
+def get_migration_progress() -> Dict[str, Any]:
+    """
+    Read current migration progress from the progress file.
+
+    Returns:
+        Dict with 'percent' (int) and 'status' (str), or empty dict.
+    """
+    import json
+    try:
+        with open(MIGRATION_PROGRESS_FILE, "r") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
