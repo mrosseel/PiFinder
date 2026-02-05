@@ -31,7 +31,6 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            # Extract from tag (v2.5.0 -> 2.5.0)
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -43,28 +42,23 @@ jobs:
           IMAGE_PATH=$(cat /tmp/image_path)
           IMAGE_FILE=$(find "${IMAGE_PATH}" -name "*.img" -o -name "*.img.zst" | head -1)
 
-          # Decompress if zstd-compressed
           if [[ "${IMAGE_FILE}" == *.zst ]]; then
             zstd -d "${IMAGE_FILE}" -o /tmp/pifinder.img
           else
             cp "${IMAGE_FILE}" /tmp/pifinder.img
           fi
 
-          # Set up loop device
           LOOP=$(sudo losetup --find --show --partscan /tmp/pifinder.img)
           echo "LOOP=${LOOP}" >> "$GITHUB_ENV"
 
-          # Mount partitions
           sudo mkdir -p /mnt/boot /mnt/root
           sudo mount "${LOOP}p1" /mnt/boot
           sudo mount "${LOOP}p2" /mnt/root
 
-          # Create tarball structure
           mkdir -p /tmp/tarball-staging
           sudo cp -a /mnt/boot /tmp/tarball-staging/boot
           sudo cp -a /mnt/root /tmp/tarball-staging/rootfs
 
-          # Cleanup mounts
           sudo umount /mnt/boot /mnt/root
           sudo losetup -d "${LOOP}"
           rm -f /tmp/pifinder.img
@@ -72,9 +66,8 @@ jobs:
       - name: Create migration tarball
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          TARBALL="pifinder-nixos-v${VERSION}.tar.zst"
+          TARBALL="pifinder-nixos-v${VERSION}.tar.gz"
 
-          # Create manifest
           cat > /tmp/tarball-staging/manifest.json <<EOF
           {
             "version": "${VERSION}",
@@ -84,14 +77,11 @@ jobs:
           }
           EOF
 
-          # Create compressed tarball
-          tar -C /tmp/tarball-staging -cf - boot rootfs manifest.json | \
-            zstd -T0 -19 -o "/tmp/${TARBALL}"
+          tar -C /tmp/tarball-staging -czf "/tmp/${TARBALL}" boot rootfs manifest.json
 
           echo "TARBALL=/tmp/${TARBALL}" >> "$GITHUB_ENV"
           echo "TARBALL_NAME=${TARBALL}" >> "$GITHUB_ENV"
 
-          # Generate checksum
           sha256sum "/tmp/${TARBALL}" | awk '{print $1}' > "/tmp/${TARBALL}.sha256"
           echo "SHA256=$(cat /tmp/${TARBALL}.sha256)" >> "$GITHUB_ENV"
 

@@ -5,7 +5,7 @@
         "version": "2.5.0",
         "type": "upgrade",
         "notes_url": "https://raw.githubusercontent.com/brickbots/PiFinder/main/RELEASE.md",
-        "migration_url": "https://github.com/brickbots/PiFinder/releases/download/v2.5.0/pifinder-nixos-migration.tar.zst",
+        "migration_url": "https://github.com/brickbots/PiFinder/releases/download/v2.5.0/pifinder-nixos-v2.5.0.tar.gz",
         "migration_sha256": "",
         "migration_size_mb": 900,
         "min_ram_mb": 2048,
