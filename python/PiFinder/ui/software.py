@@ -20,8 +20,8 @@ sys_utils = utils.get_sys_utils()
 logger = logging.getLogger("UISoftware")
 
 MANIFEST_URL = (
-    "file:///Users/mike/dev/amateur_astro/myPiFinder/wt-migration"
-    "/release_manifest.json"
+    "https://raw.githubusercontent.com/brickbots/PiFinder"
+    "/release/release_manifest.json"
 )
 VERSION_TXT_URL = (
     "https://raw.githubusercontent.com/brickbots/PiFinder" "/release/version.txt"
@@ -233,7 +233,11 @@ class UISoftware(UIModule):
             if len(versions) > 1:
                 v = self._selected_version or versions[0]
                 options.append(f"v{v['version']}")
-            options.append("Update")
+            v = self._selected_version or (versions[0] if versions else {})
+            if v.get("type") == "upgrade":
+                options.append("Upgrade")
+            else:
+                options.append("Update")
             if self._selected_version and self._selected_version.get("notes_url"):
                 options.append("Notes")
             options.append("Cancel")
@@ -305,7 +309,8 @@ class UISoftware(UIModule):
         draw_pos += 16
 
         if self._selected_version:
-            update_label = _("Update to")
+            is_upgrade = self._selected_version.get("type") == "upgrade"
+            update_label = _("Upgrade to") if is_upgrade else _("Update to")
             update_version = self._selected_version["version"]
         else:
             update_label = _("Update to")
@@ -516,6 +521,211 @@ class UISoftware(UIModule):
                 )
         elif selected == "Update":
             self.update_software()
+        elif selected == "Upgrade":
+            self.add_to_stack(
+                {
+                    "class": UIMigrationConfirm,
+                    "version_info": self._selected_version,
+                    "current_version": self._software_version.strip(),
+                }
+            )
+
+
+class UIMigrationConfirm(UIModule):
+    """
+    Warning screen before initiating NixOS migration.
+    Shows version info, warns about irreversibility, requires confirmation.
+    """
+
+    __title__ = "UPGRADE"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._version_info = self.item_definition.get("version_info", {})
+        self._current_version = self.item_definition.get("current_version", "?")
+        self._target_version = self._version_info.get("version", "?")
+        self._option_index = 0
+        self._options = [_("Confirm"), _("Cancel")]
+
+    def update(self, force=False):
+        time.sleep(1 / 30)
+        self.clear_screen()
+        y = self.display_class.titlebar_height + 2
+
+        self.draw.text(
+            (0, y),
+            _("Major Upgrade"),
+            font=self.fonts.bold.font,
+            fill=self.colors.get(255),
+        )
+        y += 14
+
+        self.draw.text(
+            (5, y),
+            f"{self._current_version} -> {self._target_version}",
+            font=self.fonts.bold.font,
+            fill=self.colors.get(192),
+        )
+        y += 16
+
+        # Separator
+        self.draw.line([(0, y), (127, y)], fill=self.colors.get(64))
+        y += 4
+
+        self.draw.text(
+            (0, y),
+            _("IRREVERSIBLE"),
+            font=self.fonts.bold.font,
+            fill=self.colors.get(255),
+        )
+        y += 12
+
+        size_mb = self._version_info.get("migration_size_mb", "?")
+        self.draw.text(
+            (0, y),
+            _("Download: {}MB").format(size_mb),
+            font=self.fonts.base.font,
+            fill=self.colors.get(128),
+        )
+        y += 11
+
+        self.draw.text(
+            (0, y),
+            _("Power + WiFi req"),
+            font=self.fonts.base.font,
+            fill=self.colors.get(128),
+        )
+        y += 16
+
+        # Options
+        for i, label in enumerate(self._options):
+            oy = y + i * 12
+            self.draw.text(
+                (10, oy),
+                label,
+                font=self.fonts.bold.font,
+                fill=self.colors.get(255),
+            )
+            if i == self._option_index:
+                self.draw.text(
+                    (0, oy),
+                    self._RIGHT_ARROW,
+                    font=self.fonts.bold.font,
+                    fill=self.colors.get(255),
+                )
+
+        return self.screen_update()
+
+    def key_up(self):
+        self._option_index = (self._option_index - 1) % len(self._options)
+
+    def key_down(self):
+        self._option_index = (self._option_index + 1) % len(self._options)
+
+    def key_left(self):
+        return True
+
+    def key_right(self):
+        if self._options[self._option_index] == _("Cancel"):
+            self.remove_from_stack()
+        elif self._options[self._option_index] == _("Confirm"):
+            self.add_to_stack(
+                {
+                    "class": UIMigrationProgress,
+                    "version_info": self._version_info,
+                }
+            )
+
+
+class UIMigrationProgress(UIModule):
+    """
+    Migration download and preparation progress screen.
+    Triggers the actual migration via sys_utils.
+    """
+
+    __title__ = "UPGRADE"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._version_info = self.item_definition.get("version_info", {})
+        self._started = False
+        self._status = _("Starting...")
+        self._progress = 0
+
+    def active(self):
+        super().active()
+        if not self._started:
+            self._started = True
+            self._start_migration()
+
+    def _start_migration(self):
+        """Kick off the migration process in the background."""
+        self._status = _("Downloading...")
+        try:
+            sys_utils.start_nixos_migration(self._version_info)
+        except AttributeError:
+            logger.error("sys_utils.start_nixos_migration not available")
+            self._status = _("Not supported")
+        except Exception as e:
+            logger.error(f"Migration failed to start: {e}")
+            self._status = _("Failed")
+
+    def update(self, force=False):
+        time.sleep(1 / 30)
+        self.clear_screen()
+        y = self.display_class.titlebar_height + 2
+
+        # Try to read progress from sys_utils
+        try:
+            progress = sys_utils.get_migration_progress()
+            if progress:
+                self._progress = progress.get("percent", self._progress)
+                self._status = progress.get("status", self._status)
+        except (AttributeError, Exception):
+            pass
+
+        self.draw.text(
+            (0, y),
+            _("NixOS Migration"),
+            font=self.fonts.bold.font,
+            fill=self.colors.get(255),
+        )
+        y += 20
+
+        # Progress bar
+        bar_x, bar_w, bar_h = 4, 120, 10
+        self.draw.rectangle(
+            [bar_x, y, bar_x + bar_w, y + bar_h],
+            outline=self.colors.get(64),
+        )
+        fill_w = int(bar_w * self._progress / 100)
+        if fill_w > 0:
+            self.draw.rectangle(
+                [bar_x + 1, y + 1, bar_x + fill_w, y + bar_h - 1],
+                fill=self.colors.get(255),
+            )
+        y += bar_h + 6
+
+        self.draw.text(
+            (0, y),
+            f"{self._progress}%",
+            font=self.fonts.bold.font,
+            fill=self.colors.get(192),
+        )
+        y += 16
+
+        self.draw.text(
+            (0, y),
+            self._status,
+            font=self.fonts.base.font,
+            fill=self.colors.get(128),
+        )
+
+        return self.screen_update()
+
+    def key_left(self):
+        # No going back during migration
+        return False
 
 
 class UIReleaseNotes(UIModule):

@@ -4,6 +4,7 @@ from PiFinder.ui.software import (
     update_needed,
     _parse_version,
     _strip_markdown,
+    _filter_upgrades,
     _UNLOCK_SEQUENCE,
 )
 
@@ -101,3 +102,51 @@ class TestStripMarkdown:
         assert "Title" in result
         assert "bold" in result
         assert "**" not in result
+
+
+@pytest.mark.unit
+class TestFilterUpgrades:
+    def test_filters_newer_versions(self):
+        versions = [
+            {"version": "2.5.0", "type": "upgrade"},
+            {"version": "2.4.1", "type": "update"},
+        ]
+        result = _filter_upgrades("2.4.0", versions)
+        assert len(result) == 2
+
+    def test_excludes_older_versions(self):
+        versions = [
+            {"version": "2.5.0", "type": "upgrade"},
+            {"version": "2.3.0", "type": "update"},
+        ]
+        result = _filter_upgrades("2.4.0", versions)
+        assert len(result) == 1
+        assert result[0]["version"] == "2.5.0"
+
+    def test_preserves_type_field(self):
+        versions = [
+            {"version": "2.5.0", "type": "upgrade", "migration_url": "https://..."},
+            {"version": "2.4.1", "type": "update"},
+        ]
+        result = _filter_upgrades("2.4.0", versions)
+        assert result[0]["type"] == "upgrade"
+        assert result[0]["migration_url"] == "https://..."
+        assert result[1]["type"] == "update"
+
+    def test_empty_input(self):
+        assert _filter_upgrades("2.4.0", []) == []
+
+    def test_upgrade_type_detected(self):
+        versions = [{"version": "2.5.0", "type": "upgrade"}]
+        result = _filter_upgrades("2.4.0", versions)
+        assert result[0].get("type") == "upgrade"
+
+    def test_update_type_detected(self):
+        versions = [{"version": "2.4.1", "type": "update"}]
+        result = _filter_upgrades("2.4.0", versions)
+        assert result[0].get("type") == "update"
+
+    def test_missing_type_field(self):
+        versions = [{"version": "2.4.1"}]
+        result = _filter_upgrades("2.4.0", versions)
+        assert result[0].get("type") is None
