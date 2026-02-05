@@ -161,16 +161,13 @@ show 22 "Copying to staging"
 mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "Cannot mount shrunk root"
 
 # Write staging header (4096 bytes, one block)
-# Format: magic line, then key=value pairs, null-padded
+# Format: magic line, then key=value pairs, zero-padded to 4096 bytes
 HEADER_FILE="/tmp/staging_header"
-{
-    echo "PFMIGRATE1"
-    echo "tarball_size=${TARBALL_SIZE}"
-    echo "backup_size=${BACKUP_SIZE}"
-} > "${HEADER_FILE}"
-# Pad to 4096 bytes
-dd if=/dev/zero bs=4096 count=1 2>/dev/null | cat "${HEADER_FILE}" - | dd bs=4096 count=1 2>/dev/null | \
-    dd of="${SD_DEV}" bs=512 seek=$(( STAGING_START_BYTE / 512 )) conv=notrunc 2>/dev/null
+dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
+printf "PFMIGRATE1\ntarball_size=%s\nbackup_size=%s\n" \
+    "${TARBALL_SIZE}" "${BACKUP_SIZE}" | dd of="${HEADER_FILE}" conv=notrunc 2>/dev/null
+dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 \
+    seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
 
 # Data layout in staging area:
 #   offset 0:                    header (4096 bytes)
@@ -183,20 +180,20 @@ BACKUP_STAGING_BYTE=$(( TARBALL_STAGING_BYTE + TARBALL_ALIGNED ))
 
 show 25 "Copying tarball"
 
-dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=1M \
-    seek=$(( TARBALL_STAGING_BYTE / 1048576 )) conv=notrunc 2>/dev/null || fail "Tarball staging failed"
+dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=4096 \
+    seek=$(( TARBALL_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Tarball staging failed"
 
 show 35 "Copying backup"
 
-dd if="${BACKUP_ON_ROOT}" of="${SD_DEV}" bs=1M \
-    seek=$(( BACKUP_STAGING_BYTE / 1048576 )) conv=notrunc 2>/dev/null || fail "Backup staging failed"
+dd if="${BACKUP_ON_ROOT}" of="${SD_DEV}" bs=4096 \
+    seek=$(( BACKUP_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Backup staging failed"
 
 umount "${MOUNT_ROOT}"
 
 show 40 "Staging complete"
 
 # Verify header readback
-MAGIC=$(dd if="${SD_DEV}" bs=512 skip=$(( STAGING_START_BYTE / 512 )) count=1 2>/dev/null | head -1)
+MAGIC=$(dd if="${SD_DEV}" bs=4096 skip=$(( STAGING_START_BYTE / 4096 )) count=1 2>/dev/null | head -1)
 [ "${MAGIC}" != "PFMIGRATE1" ] && fail "Staging header verification failed"
 
 show 42 "Staging verified"
@@ -232,10 +229,10 @@ mount -t ext4 "${ROOT_DEV}" "${MOUNT_NEW}" || fail "Cannot mount new root"
 # Extract tarball from staging area → new root
 # The .tar.gz contains: boot/, rootfs/, manifest.json
 # Extract everything first, then move boot/ to the boot partition.
-TARBALL_SKIP_MB=$(( TARBALL_STAGING_BYTE / 1048576 ))
-TARBALL_COUNT_MB=$(( TARBALL_SIZE / 1048576 + 1 ))
+TARBALL_SKIP_BLOCKS=$(( TARBALL_STAGING_BYTE / 4096 ))
+TARBALL_COUNT_BLOCKS=$(( (TARBALL_SIZE + 4095) / 4096 ))
 
-dd if="${SD_DEV}" bs=1M skip="${TARBALL_SKIP_MB}" count="${TARBALL_COUNT_MB}" 2>/dev/null | \
+dd if="${SD_DEV}" bs=4096 skip="${TARBALL_SKIP_BLOCKS}" count="${TARBALL_COUNT_BLOCKS}" 2>/dev/null | \
     gunzip | tar xf - -C "${MOUNT_NEW}" || fail "Tarball extraction failed"
 
 show 70 "Rootfs extracted"
@@ -276,10 +273,10 @@ show 80 "Restoring user data"
 
 mkdir -p "${MOUNT_NEW}/home/pifinder"
 
-BACKUP_SKIP_MB=$(( BACKUP_STAGING_BYTE / 1048576 ))
-BACKUP_COUNT_MB=$(( BACKUP_SIZE / 1048576 + 1 ))
+BACKUP_SKIP_BLOCKS=$(( BACKUP_STAGING_BYTE / 4096 ))
+BACKUP_COUNT_BLOCKS=$(( (BACKUP_SIZE + 4095) / 4096 ))
 
-dd if="${SD_DEV}" bs=1M skip="${BACKUP_SKIP_MB}" count="${BACKUP_COUNT_MB}" 2>/dev/null | \
+dd if="${SD_DEV}" bs=4096 skip="${BACKUP_SKIP_BLOCKS}" count="${BACKUP_COUNT_BLOCKS}" 2>/dev/null | \
     gunzip | tar xf - -C "${MOUNT_NEW}/home/pifinder/" || fail "User data restore failed"
 
 show 85 "User data restored"

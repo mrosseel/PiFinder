@@ -4,8 +4,10 @@
 # Creates a 32GB sparse file with RPi OS-like partition layout, populates it
 # with fake data, then runs the migration init script against it.
 #
-# Usage: sudo ./test_migration_loopdev.sh [--keep]
-#   --keep: don't clean up the loop device and image after test
+# Usage: sudo ./test_migration_loopdev.sh [--keep] [--image /path/to/pifinder-mr.img]
+#   --keep:      don't clean up the loop device and image after test
+#   --image IMG: use an existing SD card image (e.g. pifinder-mr.img) instead
+#                of creating a synthetic one. Image will be COPIED, not modified.
 #
 # Requires: losetup, sfdisk, mkfs.ext4, mkfs.vfat, e2fsck, resize2fs, cpio, gzip
 #
@@ -26,7 +28,15 @@
 set -euo pipefail
 
 KEEP=0
-[ "${1:-}" = "--keep" ] && KEEP=1
+SOURCE_IMAGE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --keep) KEEP=1; shift ;;
+        --image) SOURCE_IMAGE="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="/tmp/migration_test_$$"
@@ -64,18 +74,83 @@ trap cleanup EXIT
 
 LOOP_DEV=""
 
-# -------------------------------------------------------------------
-# Step 1: Create sparse 32GB image with RPi OS-like partitions
-# -------------------------------------------------------------------
-info "Creating ${IMAGE_SIZE_MB}MB sparse SD card image..."
 mkdir -p "${WORK_DIR}"
-truncate -s "${IMAGE_SIZE_MB}M" "${IMAGE}"
 
-info "Partitioning (boot: ${BOOT_SIZE_MB}MB FAT32, root: rest ext4)..."
-# Partition layout matching RPi OS:
-#   p1: FAT32 boot, 256MB, starting at 4MB
-#   p2: ext4 root, rest of card
-sfdisk "${IMAGE}" <<SFDISK
+if [ -n "${SOURCE_IMAGE}" ]; then
+    # -------------------------------------------------------------------
+    # Step 1a: Use existing SD card image
+    # -------------------------------------------------------------------
+    info "Copying source image: ${SOURCE_IMAGE}"
+    cp "${SOURCE_IMAGE}" "${IMAGE}"
+
+    # Extend to 32GB if smaller (handles images dumped from smaller cards)
+    CURRENT_SIZE=$(stat -c%s "${IMAGE}")
+    TARGET_SIZE=$(( IMAGE_SIZE_MB * 1048576 ))
+    if [ "${CURRENT_SIZE}" -lt "${TARGET_SIZE}" ]; then
+        info "Extending image from $(( CURRENT_SIZE / 1048576 ))MB to ${IMAGE_SIZE_MB}MB"
+        truncate -s "${IMAGE_SIZE_MB}M" "${IMAGE}"
+    fi
+
+    LOOP_DEV=$(losetup --find --show --partscan "${IMAGE}")
+    info "Loop device: ${LOOP_DEV}"
+    sleep 1
+    [ ! -b "${LOOP_DEV}p1" ] && { sleep 2; partprobe "${LOOP_DEV}"; sleep 1; }
+    [ ! -b "${LOOP_DEV}p1" ] && { error "${LOOP_DEV}p1 not found"; exit 1; }
+
+    # Expand p2 to fill image (image may have been extended)
+    echo "532480," | sfdisk -N 2 "${LOOP_DEV}" --no-reread 2>/dev/null || true
+    partprobe "${LOOP_DEV}" 2>/dev/null || true
+    sleep 1
+    e2fsck -f -y "${LOOP_DEV}p2" 2>/dev/null || true
+    resize2fs "${LOOP_DEV}p2" 2>/dev/null || true
+
+    # Mount and inject test files
+    mkdir -p "${WORK_DIR}/mnt_boot" "${WORK_DIR}/mnt_root"
+    mount "${LOOP_DEV}p1" "${WORK_DIR}/mnt_boot"
+    mount "${LOOP_DEV}p2" "${WORK_DIR}/mnt_root"
+
+    # Ensure PiFinder_data exists with something to back up
+    mkdir -p "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data"
+    [ ! -f "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/config.json" ] && \
+        echo '{"test": true}' > "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/config.json"
+
+    # Create fake NixOS tarball on the image
+    info "Creating fake NixOS tarball on image..."
+    TARBALL_STAGING="${WORK_DIR}/tarball_staging"
+    mkdir -p "${TARBALL_STAGING}/boot" "${TARBALL_STAGING}/rootfs"
+    echo "# NixOS extlinux.conf" > "${TARBALL_STAGING}/boot/extlinux.conf"
+    dd if=/dev/urandom of="${TARBALL_STAGING}/boot/Image" bs=1K count=128 2>/dev/null
+    mkdir -p "${TARBALL_STAGING}/rootfs/nix/store"
+    mkdir -p "${TARBALL_STAGING}/rootfs/etc/NetworkManager/system-connections"
+    mkdir -p "${TARBALL_STAGING}/rootfs/home/pifinder"
+    echo "NixOS rootfs marker" > "${TARBALL_STAGING}/rootfs/etc/NIXOS"
+    dd if=/dev/urandom of="${TARBALL_STAGING}/rootfs/nix/store/fakepkg" bs=1K count=256 2>/dev/null
+    echo '{"version": "2.5.0"}' > "${TARBALL_STAGING}/manifest.json"
+
+    tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz" \
+        -C "${TARBALL_STAGING}" boot rootfs manifest.json
+
+    tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz" \
+        -C "${WORK_DIR}/mnt_root/home/pifinder" PiFinder_data
+
+    TARBALL_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz")
+    BACKUP_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz")
+
+    touch "${WORK_DIR}/mnt_boot/nixos_migration"
+
+    umount "${WORK_DIR}/mnt_boot"
+    umount "${WORK_DIR}/mnt_root"
+
+    info "Image prepared (tarball: ${TARBALL_SIZE} bytes, backup: ${BACKUP_SIZE} bytes)"
+else
+    # -------------------------------------------------------------------
+    # Step 1b: Create synthetic 32GB image with RPi OS-like partitions
+    # -------------------------------------------------------------------
+    info "Creating ${IMAGE_SIZE_MB}MB sparse SD card image..."
+    truncate -s "${IMAGE_SIZE_MB}M" "${IMAGE}"
+
+    info "Partitioning (boot: ${BOOT_SIZE_MB}MB FAT32, root: rest ext4)..."
+    sfdisk "${IMAGE}" <<SFDISK
 label: dos
 unit: sectors
 
@@ -83,40 +158,31 @@ start=8192, size=524288, type=c
 start=532480, type=83
 SFDISK
 
-# Set up loop device
-LOOP_DEV=$(losetup --find --show --partscan "${IMAGE}")
-info "Loop device: ${LOOP_DEV}"
+    LOOP_DEV=$(losetup --find --show --partscan "${IMAGE}")
+    info "Loop device: ${LOOP_DEV}"
 
-# Wait for partition devices
-sleep 1
-[ ! -b "${LOOP_DEV}p1" ] && { sleep 2; partprobe "${LOOP_DEV}"; sleep 1; }
-[ ! -b "${LOOP_DEV}p1" ] && { error "${LOOP_DEV}p1 not found"; exit 1; }
+    sleep 1
+    [ ! -b "${LOOP_DEV}p1" ] && { sleep 2; partprobe "${LOOP_DEV}"; sleep 1; }
+    [ ! -b "${LOOP_DEV}p1" ] && { error "${LOOP_DEV}p1 not found"; exit 1; }
 
-# Format
-mkfs.vfat -F 32 -n boot "${LOOP_DEV}p1"
-mkfs.ext4 -F -L rootfs "${LOOP_DEV}p2"
+    mkfs.vfat -F 32 -n boot "${LOOP_DEV}p1"
+    mkfs.ext4 -F -L rootfs "${LOOP_DEV}p2"
 
-# -------------------------------------------------------------------
-# Step 2: Populate with fake RPi OS content
-# -------------------------------------------------------------------
-info "Populating fake RPi OS..."
+    # Populate with fake RPi OS content
+    info "Populating fake RPi OS..."
+    mkdir -p "${WORK_DIR}/mnt_boot" "${WORK_DIR}/mnt_root"
+    mount "${LOOP_DEV}p1" "${WORK_DIR}/mnt_boot"
+    mount "${LOOP_DEV}p2" "${WORK_DIR}/mnt_root"
 
-mkdir -p "${WORK_DIR}/mnt_boot" "${WORK_DIR}/mnt_root"
-mount "${LOOP_DEV}p1" "${WORK_DIR}/mnt_boot"
-mount "${LOOP_DEV}p2" "${WORK_DIR}/mnt_root"
+    echo "# RPi OS config" > "${WORK_DIR}/mnt_boot/config.txt"
+    dd if=/dev/urandom of="${WORK_DIR}/mnt_boot/kernel8.img" bs=1K count=64 2>/dev/null
 
-# Boot partition: fake config.txt and kernel
-echo "# RPi OS config" > "${WORK_DIR}/mnt_boot/config.txt"
-dd if=/dev/urandom of="${WORK_DIR}/mnt_boot/kernel8.img" bs=1K count=64 2>/dev/null
+    mkdir -p "${WORK_DIR}/mnt_root/etc/wpa_supplicant"
+    mkdir -p "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data"
+    mkdir -p "${WORK_DIR}/mnt_root/home/pifinder/PiFinder"
+    mkdir -p "${WORK_DIR}/mnt_root/usr/bin"
 
-# Root partition: fake RPi OS filesystem
-mkdir -p "${WORK_DIR}/mnt_root/etc/wpa_supplicant"
-mkdir -p "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data"
-mkdir -p "${WORK_DIR}/mnt_root/home/pifinder/PiFinder"
-mkdir -p "${WORK_DIR}/mnt_root/usr/bin"
-
-# WiFi credentials to migrate
-cat > "${WORK_DIR}/mnt_root/etc/wpa_supplicant/wpa_supplicant.conf" <<'WPAEOF'
+    cat > "${WORK_DIR}/mnt_root/etc/wpa_supplicant/wpa_supplicant.conf" <<'WPAEOF'
 ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
 update_config=1
 country=US
@@ -139,46 +205,41 @@ network={
 }
 WPAEOF
 
-# PiFinder user data
-echo '{"setting": "value"}' > "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/config.json"
-dd if=/dev/urandom of="${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/observations.db" bs=1K count=32 2>/dev/null
-echo "2.4.0" > "${WORK_DIR}/mnt_root/home/pifinder/PiFinder/version.txt"
+    echo '{"setting": "value"}' > "${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/config.json"
+    dd if=/dev/urandom of="${WORK_DIR}/mnt_root/home/pifinder/PiFinder_data/observations.db" bs=1K count=32 2>/dev/null
+    echo "2.4.0" > "${WORK_DIR}/mnt_root/home/pifinder/PiFinder/version.txt"
 
-# Create a fake migration tarball (.tar.gz containing boot/ + rootfs/ + manifest.json)
-info "Creating fake NixOS tarball..."
-TARBALL_STAGING="${WORK_DIR}/tarball_staging"
-mkdir -p "${TARBALL_STAGING}/boot" "${TARBALL_STAGING}/rootfs"
+    info "Creating fake NixOS tarball..."
+    TARBALL_STAGING="${WORK_DIR}/tarball_staging"
+    mkdir -p "${TARBALL_STAGING}/boot" "${TARBALL_STAGING}/rootfs"
 
-# Fake NixOS boot contents
-echo "# NixOS extlinux.conf" > "${TARBALL_STAGING}/boot/extlinux.conf"
-dd if=/dev/urandom of="${TARBALL_STAGING}/boot/Image" bs=1K count=128 2>/dev/null
+    echo "# NixOS extlinux.conf" > "${TARBALL_STAGING}/boot/extlinux.conf"
+    dd if=/dev/urandom of="${TARBALL_STAGING}/boot/Image" bs=1K count=128 2>/dev/null
 
-# Fake NixOS rootfs
-mkdir -p "${TARBALL_STAGING}/rootfs/nix/store"
-mkdir -p "${TARBALL_STAGING}/rootfs/etc/NetworkManager/system-connections"
-mkdir -p "${TARBALL_STAGING}/rootfs/home/pifinder"
-echo "NixOS rootfs marker" > "${TARBALL_STAGING}/rootfs/etc/NIXOS"
-dd if=/dev/urandom of="${TARBALL_STAGING}/rootfs/nix/store/fakepkg" bs=1K count=256 2>/dev/null
+    mkdir -p "${TARBALL_STAGING}/rootfs/nix/store"
+    mkdir -p "${TARBALL_STAGING}/rootfs/etc/NetworkManager/system-connections"
+    mkdir -p "${TARBALL_STAGING}/rootfs/home/pifinder"
+    echo "NixOS rootfs marker" > "${TARBALL_STAGING}/rootfs/etc/NIXOS"
+    dd if=/dev/urandom of="${TARBALL_STAGING}/rootfs/nix/store/fakepkg" bs=1K count=256 2>/dev/null
 
-echo '{"version": "2.5.0"}' > "${TARBALL_STAGING}/manifest.json"
+    echo '{"version": "2.5.0"}' > "${TARBALL_STAGING}/manifest.json"
 
-tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz" \
-    -C "${TARBALL_STAGING}" boot rootfs manifest.json
+    tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz" \
+        -C "${TARBALL_STAGING}" boot rootfs manifest.json
 
-# Backup PiFinder_data
-tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz" \
-    -C "${WORK_DIR}/mnt_root/home/pifinder" PiFinder_data
+    tar czf "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz" \
+        -C "${WORK_DIR}/mnt_root/home/pifinder" PiFinder_data
 
-TARBALL_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz")
-BACKUP_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz")
+    TARBALL_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder-nixos-migration.tar.gz")
+    BACKUP_SIZE=$(stat -c%s "${WORK_DIR}/mnt_root/home/pifinder/pifinder_backup.tar.gz")
 
-# Migration flag on boot
-touch "${WORK_DIR}/mnt_boot/nixos_migration"
+    touch "${WORK_DIR}/mnt_boot/nixos_migration"
 
-umount "${WORK_DIR}/mnt_boot"
-umount "${WORK_DIR}/mnt_root"
+    umount "${WORK_DIR}/mnt_boot"
+    umount "${WORK_DIR}/mnt_root"
 
-info "Fake RPi OS populated (tarball: ${TARBALL_SIZE} bytes, backup: ${BACKUP_SIZE} bytes)"
+    info "Fake RPi OS populated (tarball: ${TARBALL_SIZE} bytes, backup: ${BACKUP_SIZE} bytes)"
+fi
 
 # -------------------------------------------------------------------
 # Step 3: Create migration metadata (normally done by nixos_migration.sh)
@@ -209,26 +270,9 @@ chmod +x "${INITRAMFS_DIR}/init"
 # Copy metadata
 cp "${WORK_DIR}/migration_meta" "${INITRAMFS_DIR}/"
 
-# Copy busybox
-BUSYBOX_PATH=$(command -v busybox 2>/dev/null || true)
-if [ -z "${BUSYBOX_PATH}" ]; then
-    error "busybox not found - install it to run this test"
-    exit 1
-fi
-cp "${BUSYBOX_PATH}" "${INITRAMFS_DIR}/bin/"
-
-# Copy filesystem tools
-for tool in e2fsck resize2fs mke2fs mkfs.vfat sfdisk partprobe blockdev; do
-    tool_path=$(command -v "${tool}" 2>/dev/null || true)
-    if [ -n "${tool_path}" ]; then
-        cp "${tool_path}" "${INITRAMFS_DIR}/bin/" 2>/dev/null || true
-    else
-        warn "Skipping ${tool} (not found)"
-    fi
-done
-ln -sf mke2fs "${INITRAMFS_DIR}/bin/mkfs.ext4" 2>/dev/null || true
-
-info "Test initramfs built"
+# Note: we don't actually boot this initramfs — the test runs the migration
+# logic directly on the host. The initramfs dir is just for structural testing.
+info "Test initramfs dir created (not booted — test runs on host)"
 
 # -------------------------------------------------------------------
 # Step 5: Run the migration init script in a chroot-like environment
@@ -325,22 +369,24 @@ mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "mount shrunk root"
 TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
 BACKUP_ON_ROOT="${MOUNT_ROOT}${BACKUP_PATH}"
 
-# Write header
+# Write header (4096 bytes, zero-padded)
 HEADER_FILE="/tmp/staging_header_$$"
-printf "PFMIGRATE1\ntarball_size=%s\nbackup_size=%s\n" "${TARBALL_SIZE}" "${BACKUP_SIZE}" > "${HEADER_FILE}"
-dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 count=1 seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
+dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
+printf "PFMIGRATE1\ntarball_size=%s\nbackup_size=%s\n" "${TARBALL_SIZE}" "${BACKUP_SIZE}" | \
+    dd of="${HEADER_FILE}" conv=notrunc 2>/dev/null
+dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
 
 TARBALL_ALIGNED=$(( (TARBALL_SIZE + 4095) / 4096 * 4096 ))
 TARBALL_STAGING_BYTE=$(( STAGING_START_BYTE + 4096 ))
 BACKUP_STAGING_BYTE=$(( TARBALL_STAGING_BYTE + TARBALL_ALIGNED ))
 
 show 25 "Copying tarball to staging"
-dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=1M \
-    seek=$(( TARBALL_STAGING_BYTE / 1048576 )) conv=notrunc 2>/dev/null || fail "tarball stage"
+dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=4096 \
+    seek=$(( TARBALL_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "tarball stage"
 
 show 35 "Copying backup to staging"
-dd if="${BACKUP_ON_ROOT}" of="${SD_DEV}" bs=1M \
-    seek=$(( BACKUP_STAGING_BYTE / 1048576 )) conv=notrunc 2>/dev/null || fail "backup stage"
+dd if="${BACKUP_ON_ROOT}" of="${SD_DEV}" bs=4096 \
+    seek=$(( BACKUP_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "backup stage"
 
 umount "${MOUNT_ROOT}"
 
@@ -363,10 +409,10 @@ show 57 "Extracting NixOS"
 mkdir -p "${MOUNT_NEW}"
 mount -t ext4 "${ROOT_DEV}" "${MOUNT_NEW}" || fail "mount new root"
 
-TARBALL_SKIP_MB=$(( TARBALL_STAGING_BYTE / 1048576 ))
-TARBALL_COUNT_MB=$(( TARBALL_SIZE / 1048576 + 1 ))
+TARBALL_SKIP_BLOCKS=$(( TARBALL_STAGING_BYTE / 4096 ))
+TARBALL_COUNT_BLOCKS=$(( (TARBALL_SIZE + 4095) / 4096 ))
 
-dd if="${SD_DEV}" bs=1M skip="${TARBALL_SKIP_MB}" count="${TARBALL_COUNT_MB}" 2>/dev/null | \
+dd if="${SD_DEV}" bs=4096 skip="${TARBALL_SKIP_BLOCKS}" count="${TARBALL_COUNT_BLOCKS}" 2>/dev/null | \
     gunzip | tar xf - -C "${MOUNT_NEW}" || fail "extract"
 
 show 70 "Extracted"
@@ -398,10 +444,10 @@ show 78 "Layout done"
 show 80 "Restoring user data"
 mkdir -p "${MOUNT_NEW}/home/pifinder"
 
-BACKUP_SKIP_MB=$(( BACKUP_STAGING_BYTE / 1048576 ))
-BACKUP_COUNT_MB=$(( BACKUP_SIZE / 1048576 + 1 ))
+BACKUP_SKIP_BLOCKS=$(( BACKUP_STAGING_BYTE / 4096 ))
+BACKUP_COUNT_BLOCKS=$(( (BACKUP_SIZE + 4095) / 4096 ))
 
-dd if="${SD_DEV}" bs=1M skip="${BACKUP_SKIP_MB}" count="${BACKUP_COUNT_MB}" 2>/dev/null | \
+dd if="${SD_DEV}" bs=4096 skip="${BACKUP_SKIP_BLOCKS}" count="${BACKUP_COUNT_BLOCKS}" 2>/dev/null | \
     gunzip | tar xf - -C "${MOUNT_NEW}/home/pifinder/" || fail "restore backup"
 
 show 85 "Data restored"
