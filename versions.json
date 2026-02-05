@@ -21,6 +21,16 @@
           "notes": "Development branch"
         }
       ]
+    },
+    "beta": {
+      "versions": [
+        {
+          "version": "2.5.0",
+          "ref": "v2.5.0-beta",
+          "date": "2026-02-05",
+          "notes": "flexible upgrades"
+        }
+      ]
     }
   }
 }
