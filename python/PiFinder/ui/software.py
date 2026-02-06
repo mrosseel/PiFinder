@@ -129,7 +129,6 @@ class UISoftware(UIModule):
         self._release_version = "-.-.-"
         self._elipsis_count = 0
         self._go_for_update = False
-        self._show_unstable = False
 
         # Menu navigation
         # Phases: "channel" or "action"
@@ -140,8 +139,9 @@ class UISoftware(UIModule):
         self._options: list = []
         self._option_index = 0
 
-        # Unlock sequence tracking
+        # Unlock sequence tracking (7x square enables unstable + upgrades)
         self._key_buffer: list = []
+        self._unlocked = False
 
         # Update failure state
         self._update_failed = False
@@ -150,7 +150,7 @@ class UISoftware(UIModule):
     def active(self):
         super().active()
         self._key_buffer = []
-        self._show_unstable = False
+        self._unlocked = False
         self._menu_phase = "action"
         self._selected_channel = "stable"
         self._selected_version = None
@@ -162,13 +162,13 @@ class UISoftware(UIModule):
         if len(self._key_buffer) > len(_UNLOCK_SEQUENCE):
             self._key_buffer = self._key_buffer[-len(_UNLOCK_SEQUENCE) :]
         if self._key_buffer == _UNLOCK_SEQUENCE:
-            self._show_unstable = not self._show_unstable
+            self._unlocked = not self._unlocked
             self._key_buffer = []
-            if self._show_unstable:
-                self.message("Unstable ON", 2)
+            if self._unlocked:
+                self.message("Dev mode ON", 2)
                 self._menu_phase = "channel"
             else:
-                self.message("Unstable OFF", 2)
+                self.message("Dev mode OFF", 2)
                 self._selected_channel = "stable"
                 self._selected_version = None
                 self._menu_phase = "action"
@@ -203,13 +203,21 @@ class UISoftware(UIModule):
             self._release_version = "Unknown"
 
     def _available_channels(self) -> Dict[str, List[dict]]:
-        """Return channels that have upgrades, filtered by unlock state."""
+        """Return channels that have updates/upgrades, filtered by unlock state.
+
+        When locked (default): only show update-type versions from stable.
+        When unlocked (7x square): show all channels and upgrade-type versions.
+        """
         current = self._software_version.strip()
         result = {}
         for name, versions in self._channels.items():
-            if name == "unstable" and not self._show_unstable:
+            if name == "unstable" and not self._unlocked:
                 continue
+            # Filter to newer versions
             upgrades = _filter_upgrades(current, versions)
+            # When locked, also filter out upgrade-type versions
+            if not self._unlocked:
+                upgrades = [v for v in upgrades if v.get("type") != "upgrade"]
             if upgrades:
                 result[name] = upgrades
         return result
@@ -254,7 +262,7 @@ class UISoftware(UIModule):
         available = self._available_channels()
         channel_names = list(available.keys())
 
-        if self._show_unstable and len(channel_names) > 1:
+        if self._unlocked and len(channel_names) > 1:
             self._menu_phase = "channel"
             self._option_index = 0
             return
@@ -464,7 +472,7 @@ class UISoftware(UIModule):
         self._cycle_option(1)
 
     def key_left(self):
-        if self._menu_phase == "action" and self._show_unstable:
+        if self._menu_phase == "action" and self._unlocked:
             available = self._available_channels()
             if len(available) > 1:
                 self._menu_phase = "channel"
