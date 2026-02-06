@@ -36,8 +36,8 @@ INITRAMFS_DIR="/tmp/nixos_initramfs"
 PROGRESS_BIN="${SCRIPT_DIR}/migration_progress"
 INIT_SCRIPT="${SCRIPT_DIR}/nixos_migration_init.sh"
 
-# 2GB staging area at end of SD card (holds ~900MB tarball + ~100MB backup + margin)
-STAGING_SIZE_MB=2048
+# 8GB staging area at end of SD card (holds ~900MB tarball + full backup with images)
+STAGING_SIZE_MB=8192
 
 progress() {
     local pct="$1"
@@ -109,15 +109,22 @@ fi
 
 progress 65 "Checksum OK"
 
-# --- Phase 4: Backup user data ---
-progress 68 "Backing up user data"
-
-tar czf "${BACKUP_TAR}" -C "${PIFINDER_HOME}" PiFinder_data || fail 4 "Backup failed"
+# --- Phase 4: Calculate sizes (backup created in initramfs to save space) ---
+progress 68 "Calculating sizes"
 
 TARBALL_SIZE=$(stat -c%s "${TARBALL}")
-BACKUP_SIZE=$(stat -c%s "${BACKUP_TAR}")
 
-progress 75 "Backup complete"
+# Estimate backup size: PiFinder_data compressed ~50% typically
+# Initramfs will stream backup directly to staging, so we just need estimate for header
+PIFINDER_DATA="${PIFINDER_HOME}/PiFinder_data"
+if [ -d "${PIFINDER_DATA}" ]; then
+    DATA_SIZE=$(du -sb "${PIFINDER_DATA}" 2>/dev/null | cut -f1)
+    BACKUP_SIZE_EST=$(( DATA_SIZE / 2 ))  # conservative compression estimate
+else
+    BACKUP_SIZE_EST=0
+fi
+
+progress 75 "Sizes calculated"
 
 # --- Phase 5: Build initramfs ---
 progress 78 "Building initramfs"
@@ -159,11 +166,12 @@ cp "${INIT_SCRIPT}" "${INITRAMFS_DIR}/init"
 chmod +x "${INITRAMFS_DIR}/init"
 
 # Metadata: paths + sizes so init script knows where to find things
+# Note: backup is created by initramfs directly to staging (saves space on full disks)
 cat > "${INITRAMFS_DIR}/migration_meta" <<METAEOF
 TARBALL_PATH=${TARBALL}
-BACKUP_PATH=${BACKUP_TAR}
+PIFINDER_DATA_PATH=${PIFINDER_HOME}/PiFinder_data
 TARBALL_SIZE=${TARBALL_SIZE}
-BACKUP_SIZE=${BACKUP_SIZE}
+BACKUP_SIZE_EST=${BACKUP_SIZE_EST}
 STAGING_SIZE_MB=${STAGING_SIZE_MB}
 METAEOF
 

@@ -69,7 +69,7 @@ if [ ! -f /migration_meta ]; then
     fail "migration_meta not found in initramfs"
 fi
 . /migration_meta
-# Now we have: TARBALL_PATH, BACKUP_PATH, TARBALL_SIZE, BACKUP_SIZE, STAGING_SIZE_MB
+# Now we have: TARBALL_PATH, PIFINDER_DATA_PATH, TARBALL_SIZE, BACKUP_SIZE_EST, STAGING_SIZE_MB
 
 show 3 "Validated"
 
@@ -86,10 +86,10 @@ mkdir -p "${MOUNT_ROOT}"
 mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "Cannot mount root"
 
 TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
-BACKUP_ON_ROOT="${MOUNT_ROOT}${BACKUP_PATH}"
+PIFINDER_DATA_ON_ROOT="${MOUNT_ROOT}${PIFINDER_DATA_PATH}"
 
 [ ! -f "${TARBALL_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "Tarball not found: ${TARBALL_PATH}"; }
-[ ! -f "${BACKUP_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "Backup not found: ${BACKUP_PATH}"; }
+[ ! -d "${PIFINDER_DATA_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "PiFinder_data not found: ${PIFINDER_DATA_PATH}"; }
 
 # Save WiFi credentials to RAM before we lose access to old root
 WPA_FILE="${MOUNT_ROOT}/etc/wpa_supplicant/wpa_supplicant.conf"
@@ -115,11 +115,8 @@ SD_BYTES=$(blockdev --getsize64 "${SD_DEV}")
 SD_SECTORS=$(blockdev --getsz "${SD_DEV}")
 
 # Get current p2 start sector from partition table
-P2_START=$(sfdisk -d "${SD_DEV}" 2>/dev/null | awk '/mmcblk0p2/ {
-    for (i=1; i<=NF; i++) {
-        if ($i ~ /^start=/) { gsub(/start=/, "", $i); gsub(/,/, "", $i); print $i }
-    }
-}')
+# sfdisk -d puts space between 'start=' and value, so use sed
+P2_START=$(sfdisk -d "${SD_DEV}" 2>/dev/null | grep 'mmcblk0p2' | sed 's/.*start= *//' | sed 's/,.*//')
 [ -z "${P2_START}" ] && fail "Cannot read p2 start sector"
 
 # Calculate new p2 size: current size minus staging area
@@ -152,27 +149,24 @@ STAGING_START_BYTE=$(( (P2_START + P2_NEW_SECTORS) * 512 ))
 show 20 "Staging area ready"
 
 # -------------------------------------------------------------------
-# Phase 4: Copy tarball + backup from root to staging area
+# Phase 4: Copy tarball + stream backup to staging area
 # -------------------------------------------------------------------
+# Key insight: We don't create backup as a file on root (no space).
+# Instead we stream tar directly to staging area, avoiding the need
+# for backup_size + tarball_size free space on root.
 
 show 22 "Copying to staging"
 
 # Mount the (now smaller) root FS read-only
 mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "Cannot mount shrunk root"
 
-# Write staging header (4096 bytes, one block)
-# Format: magic line, then key=value pairs, zero-padded to 4096 bytes
-HEADER_FILE="/tmp/staging_header"
-dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
-printf "PFMIGRATE1\ntarball_size=%s\nbackup_size=%s\n" \
-    "${TARBALL_SIZE}" "${BACKUP_SIZE}" | dd of="${HEADER_FILE}" conv=notrunc 2>/dev/null
-dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 \
-    seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
+TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
+PIFINDER_DATA_ON_ROOT="${MOUNT_ROOT}${PIFINDER_DATA_PATH}"
 
 # Data layout in staging area:
-#   offset 0:                    header (4096 bytes)
+#   offset 0:                    header (4096 bytes) - written AFTER we know backup size
 #   offset 4096:                 tarball (TARBALL_SIZE bytes)
-#   offset 4096+TARBALL_ALIGNED: backup (BACKUP_SIZE bytes)
+#   offset 4096+TARBALL_ALIGNED: backup (streamed, size measured after)
 TARBALL_ALIGNED=$(( (TARBALL_SIZE + 4095) / 4096 * 4096 ))
 
 TARBALL_STAGING_BYTE=$(( STAGING_START_BYTE + 4096 ))
@@ -183,12 +177,33 @@ show 25 "Copying tarball"
 dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=4096 \
     seek=$(( TARBALL_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Tarball staging failed"
 
-show 35 "Copying backup"
+show 35 "Creating backup"
 
-dd if="${BACKUP_ON_ROOT}" of="${SD_DEV}" bs=4096 \
+# Create backup in tmpfs (RAM) then copy to staging
+# Exclude captures and screenshots (user-generated ephemeral data)
+BACKUP_TMP="/tmp/pifinder_backup.tar.gz"
+tar czf "${BACKUP_TMP}" -C "$(dirname "${PIFINDER_DATA_ON_ROOT}")" \
+    --exclude='PiFinder_data/captures' \
+    --exclude='PiFinder_data/screenshots' \
+    "$(basename "${PIFINDER_DATA_ON_ROOT}")" 2>/dev/null || fail "Backup creation failed"
+
+BACKUP_SIZE=$(stat -c%s "${BACKUP_TMP}")
+show 37 "Backup created (${BACKUP_SIZE} bytes)"
+
+show 38 "Copying backup to staging"
+dd if="${BACKUP_TMP}" of="${SD_DEV}" bs=4096 \
     seek=$(( BACKUP_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Backup staging failed"
+rm -f "${BACKUP_TMP}"
 
 umount "${MOUNT_ROOT}"
+
+# Now write header with actual backup size
+HEADER_FILE="/tmp/staging_header"
+dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
+printf "PFMIGRATE1\ntarball_size=%s\nbackup_size=%s\n" \
+    "${TARBALL_SIZE}" "${BACKUP_SIZE}" | dd of="${HEADER_FILE}" conv=notrunc 2>/dev/null
+dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 \
+    seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
 
 show 40 "Staging complete"
 
@@ -250,13 +265,8 @@ show 75 "Boot extracted"
 
 # Move rootfs/ contents to actual root (tarball has rootfs/ prefix)
 if [ -d "${MOUNT_NEW}/rootfs" ]; then
-    # Move everything from rootfs/ up one level
-    cd "${MOUNT_NEW}/rootfs"
-    for item in .* *; do
-        [ "${item}" = "." ] || [ "${item}" = ".." ] && continue
-        mv "${item}" "${MOUNT_NEW}/" 2>/dev/null || cp -a "${item}" "${MOUNT_NEW}/" && rm -rf "${item}"
-    done
-    cd /
+    # Use find to avoid glob expansion issues with empty dirs
+    find "${MOUNT_NEW}/rootfs" -mindepth 1 -maxdepth 1 -exec mv {} "${MOUNT_NEW}/" \; 2>/dev/null || true
     rmdir "${MOUNT_NEW}/rootfs" 2>/dev/null || true
 fi
 
@@ -381,8 +391,8 @@ chown -R 1000:100 "${MOUNT_NEW}/home/pifinder" 2>/dev/null || true
 # (reclaiming the staging area which we no longer need)
 umount "${MOUNT_NEW}"
 
-# Expand partition to fill card
-echo "${P2_START}," | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
+# Expand partition to fill card (", +" means keep start, use all remaining space)
+echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
 partprobe "${SD_DEV}" 2>/dev/null || blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
 sleep 1
 
