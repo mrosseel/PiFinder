@@ -351,13 +351,15 @@ def solver(
                             solved["RA"] = None
                             solved["Dec"] = None
                             solved["Matches"] = 0
-                        else:
-                            log_no_stars_found = True
-                            _solver_args = {}
-                            if align_ra != 0 and align_dec != 0:
-                                _solver_args["target_sky_coord"] = [[align_ra, align_dec]]
+                            continue  # Skip to next image - no stars to solve
 
-                            solution = t3.solve_from_centroids(
+                        # Have centroids, proceed with solve
+                        log_no_stars_found = True
+                        _solver_args = {}
+                        if align_ra != 0 and align_dec != 0:
+                            _solver_args["target_sky_coord"] = [[align_ra, align_dec]]
+
+                        solution = t3.solve_from_centroids(
                             centroids,
                             (512, 512),
                             fov_estimate=12.0,
@@ -389,19 +391,20 @@ def solver(
                                 calculation_interval_seconds=SQM_CALCULATION_INTERVAL_SECONDS,
                             )
 
-                            # Don't clutter printed solution with these fields.
-                            del solution["matched_catID"]
-                            del solution["pattern_centroids"]
-                            del solution["epoch_equinox"]
-                            del solution["epoch_proper_motion"]
-                            del solution["cache_hit_fraction"]
+                            # Don't clutter printed solution with these fields (use pop to safely remove)
+                            solution.pop("matched_catID", None)
+                            solution.pop("pattern_centroids", None)
+                            solution.pop("epoch_equinox", None)
+                            solution.pop("epoch_proper_motion", None)
+                            solution.pop("cache_hit_fraction", None)
 
                         solved |= solution
 
-                        total_tetra_time = t_extract + solved["T_solve"]
-                        if total_tetra_time > 1000:
-                            console_queue.put(f"SLV: Long: {total_tetra_time}")
-                            logger.warning("Long solver time: %i", total_tetra_time)
+                        if "T_solve" in solved:
+                            total_tetra_time = t_extract + solved["T_solve"]
+                            if total_tetra_time > 1000:
+                                console_queue.put(f"SLV: Long: {total_tetra_time}")
+                                logger.warning("Long solver time: %i", total_tetra_time)
 
                         if solved["RA"] is not None:
                             # RA, Dec, Roll at the center of the camera's FoV:
