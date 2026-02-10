@@ -23,6 +23,8 @@
 
 set -euo pipefail
 
+export PATH="/usr/sbin:/sbin:${PATH}"
+
 MIGRATION_URL="${1:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
 MIGRATION_SHA256="${2:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
 PROGRESS_FILE="${3:-/tmp/nixos_migration_progress}"
@@ -92,7 +94,7 @@ fi
 progress 5 "Pre-flight OK"
 
 # --- Phase 2: Download tarball ---
-progress 10 "Downloading..."
+progress 10 "Downloading... 0%"
 
 if ! curl -L -f -o "${TARBALL}" \
     --progress-bar \
