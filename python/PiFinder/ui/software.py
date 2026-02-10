@@ -730,8 +730,9 @@ class UIMigrationProgress(UIModule):
         pct_text = f"{self._progress}%"
         pct_bbox = self.fonts.base.font.getbbox(pct_text)
         pct_w = pct_bbox[2] - pct_bbox[0]
+        pct_h = pct_bbox[3] - pct_bbox[1]
         pct_x = bar_x + (bar_w - pct_w) // 2
-        pct_y = y + 1
+        pct_y = y + (bar_h - pct_h) // 2 - pct_bbox[1]
         self.draw.text(
             (pct_x, pct_y),
             pct_text,
