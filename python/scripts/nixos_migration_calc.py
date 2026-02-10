@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MIN_RAM_MB = 2048
+MIN_RAM_MB = 1800  # 2GB Pi reports ~1849MB due to GPU memory reservation
 MIN_SD_GB = 16
 REQUIRED_MODEL = "Raspberry Pi 4"
 

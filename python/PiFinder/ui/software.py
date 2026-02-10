@@ -164,7 +164,7 @@ class UISoftware(UIModule):
         if self._key_buffer == _UNLOCK_SEQUENCE:
             self._key_buffer = []
             # 7x square = direct upgrade to 2.5.0, bypass all manifest/version logic
-            self.message("NixOS Upgrade", 1)
+            self.message("System Upgrade", 1)
             self.add_to_stack(
                 {
                     "class": UIMigrationConfirm,
@@ -663,6 +663,14 @@ class UIMigrationProgress(UIModule):
         self._started = False
         self._status = _("Starting...")
         self._progress = 0
+        self._status_layout = TextLayouter(
+            "",
+            draw=self.draw,
+            color=self.colors.get(255),
+            colors=self.colors,
+            font=self.fonts.base,
+            available_lines=4,
+        )
 
     def active(self):
         super().active()
@@ -692,13 +700,16 @@ class UIMigrationProgress(UIModule):
             progress = sys_utils.get_migration_progress()
             if progress:
                 self._progress = progress.get("percent", self._progress)
-                self._status = progress.get("status", self._status)
+                new_status = progress.get("status", self._status)
+                if new_status != self._status:
+                    self._status = new_status
+                    self._status_layout.set_text(self._status)
         except (AttributeError, Exception):
             pass
 
         self.draw.text(
             (0, y),
-            _("NixOS Migration"),
+            _("System Upgrade"),
             font=self.fonts.bold.font,
             fill=self.colors.get(255),
         )
@@ -726,14 +737,16 @@ class UIMigrationProgress(UIModule):
         )
         y += 16
 
-        self.draw.text(
-            (0, y),
-            self._status,
-            font=self.fonts.base.font,
-            fill=self.colors.get(128),
-        )
+        # Use TextLayouter for scrollable status text
+        self._status_layout.draw((0, y))
 
         return self.screen_update()
+
+    def key_up(self):
+        self._status_layout.previous()
+
+    def key_down(self):
+        self._status_layout.next()
 
     def key_left(self):
         # No going back during migration
