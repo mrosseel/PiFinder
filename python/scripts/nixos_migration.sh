@@ -69,8 +69,16 @@ copy_with_libs() {
     done
 }
 
+# --- Phase 0: Install required packages ---
+progress 0 "Installing dependencies"
+for pkg in e2fsprogs dosfstools fdisk; do
+    if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
+        sudo apt-get install -y "${pkg}" || fail 1 "Failed to install ${pkg}"
+    fi
+done
+
 # --- Phase 1: Pre-flight checks ---
-progress 0 "Running pre-flight checks"
+progress 3 "Running pre-flight checks"
 
 if ! python3 "${SCRIPT_DIR}/nixos_migration_calc.py" --json > /tmp/migration_checks.json 2>&1; then
     fail 1 "Pre-flight checks failed"
@@ -88,11 +96,11 @@ progress 10 "Downloading..."
 
 if ! curl -L -f -o "${TARBALL}" \
     --progress-bar \
-    "${MIGRATION_URL}" 2>&1 | while IFS= read -r line; do
+    "${MIGRATION_URL}" 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
         if [[ "$line" =~ ([0-9]+)\.[0-9]% ]]; then
             dl_pct="${BASH_REMATCH[1]}"
             mapped_pct=$(( 10 + dl_pct * 50 / 100 ))
-            progress "${mapped_pct}" "Downloading ${dl_pct}%"
+            progress "${mapped_pct}" "Downloading... ${dl_pct}%"
         fi
     done; then
     fail 2 "Download failed"
