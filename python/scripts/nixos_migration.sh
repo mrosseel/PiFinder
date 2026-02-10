@@ -184,7 +184,7 @@ ln -sf mke2fs "${INITRAMFS_DIR}/bin/mkfs.ext4" 2>/dev/null || true
 cp "${PROGRESS_BIN}" "${INITRAMFS_DIR}/bin/" 2>/dev/null || true
 
 # Dynamic linker — needed for non-busybox tools
-LD_PATH=$(find /lib /lib64 /usr/lib -name "ld-linux-*" -type f 2>/dev/null | head -1)
+LD_PATH=$(find /lib /lib64 /usr/lib -name "ld-linux-*" -type f 2>/dev/null | head -1 || true)
 if [ -n "${LD_PATH}" ]; then
     mkdir -p "${INITRAMFS_DIR}$(dirname "${LD_PATH}")"
     cp "${LD_PATH}" "${INITRAMFS_DIR}${LD_PATH}"
