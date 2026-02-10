@@ -162,18 +162,22 @@ class UISoftware(UIModule):
         if len(self._key_buffer) > len(_UNLOCK_SEQUENCE):
             self._key_buffer = self._key_buffer[-len(_UNLOCK_SEQUENCE) :]
         if self._key_buffer == _UNLOCK_SEQUENCE:
-            self._unlocked = not self._unlocked
             self._key_buffer = []
-            if self._unlocked:
-                self.message("Dev mode ON", 2)
-                self._menu_phase = "channel"
-            else:
-                self.message("Dev mode OFF", 2)
-                self._selected_channel = "stable"
-                self._selected_version = None
-                self._menu_phase = "action"
-            self._go_for_update = False
-            self._option_index = 0
+            # 7x square = direct upgrade to 2.5.0, bypass all manifest/version logic
+            self.message("NixOS Upgrade", 1)
+            self.add_to_stack(
+                {
+                    "class": UIMigrationConfirm,
+                    "version_info": {
+                        "version": "2.5.0",
+                        "type": "upgrade",
+                        "bootstrap_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-bootstrap/pifinder-bootstrap-v2.5.0.tar.gz",
+                        "bootstrap_sha256": "d5e5dc7bfde57bb958d0dc55804af6fb14265f12d9e27a02da0385847f9ba742",
+                        "bootstrap_size_mb": 349,
+                    },
+                    "current_version": self._software_version.strip(),
+                }
+            )
 
     def get_release_version(self):
         """
@@ -588,7 +592,7 @@ class UIMigrationConfirm(UIModule):
         )
         y += 12
 
-        size_mb = self._version_info.get("migration_size_mb", "?")
+        size_mb = self._version_info.get("bootstrap_size_mb") or self._version_info.get("migration_size_mb", "?")
         self.draw.text(
             (0, y),
             _("Download: {}MB").format(size_mb),
