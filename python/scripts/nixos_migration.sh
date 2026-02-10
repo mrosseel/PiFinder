@@ -94,27 +94,40 @@ fi
 progress 5 "Pre-flight OK"
 
 # --- Phase 2: Download tarball ---
-progress 10 "Downloading... 0%"
-
-if ! curl -L -f -o "${TARBALL}" \
-    --progress-bar \
-    "${MIGRATION_URL}" 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
-        if [[ "$line" =~ ([0-9]+)\.[0-9]% ]]; then
-            dl_pct="${BASH_REMATCH[1]}"
-            mapped_pct=$(( 10 + dl_pct * 50 / 100 ))
-            progress "${mapped_pct}" "Downloading... ${dl_pct}%"
-        fi
-    done; then
-    fail 2 "Download failed"
+SKIP_DOWNLOAD=false
+if [ -f "${TARBALL}" ]; then
+    progress 10 "Verifying existing download"
+    EXISTING_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+    if [ "${EXISTING_SHA256}" = "${MIGRATION_SHA256}" ]; then
+        progress 60 "Using cached download"
+        SKIP_DOWNLOAD=true
+    fi
 fi
 
-progress 60 "Verifying checksum"
-
-# --- Phase 3: Verify checksum ---
-ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
-if [ "${ACTUAL_SHA256}" != "${MIGRATION_SHA256}" ]; then
+if [ "${SKIP_DOWNLOAD}" = false ]; then
+    progress 10 "Downloading... 0%"
     rm -f "${TARBALL}"
-    fail 3 "Checksum mismatch"
+
+    if ! curl -L -f -o "${TARBALL}" \
+        --progress-bar \
+        "${MIGRATION_URL}" 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
+            if [[ "$line" =~ ([0-9]+)\.[0-9]% ]]; then
+                dl_pct="${BASH_REMATCH[1]}"
+                mapped_pct=$(( 10 + dl_pct * 50 / 100 ))
+                progress "${mapped_pct}" "Downloading... ${dl_pct}%"
+            fi
+        done; then
+        fail 2 "Download failed"
+    fi
+
+    progress 60 "Verifying checksum"
+
+    # --- Phase 3: Verify checksum ---
+    ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+    if [ "${ACTUAL_SHA256}" != "${MIGRATION_SHA256}" ]; then
+        rm -f "${TARBALL}"
+        fail 3 "Checksum mismatch"
+    fi
 fi
 
 progress 65 "Checksum OK"

@@ -716,7 +716,7 @@ class UIMigrationProgress(UIModule):
         y += 20
 
         # Progress bar
-        bar_x, bar_w, bar_h = 4, 120, 10
+        bar_x, bar_w, bar_h = 4, 120, 12
         self.draw.rectangle(
             [bar_x, y, bar_x + bar_w, y + bar_h],
             outline=self.colors.get(64),
@@ -727,15 +727,18 @@ class UIMigrationProgress(UIModule):
                 [bar_x + 1, y + 1, bar_x + fill_w, y + bar_h - 1],
                 fill=self.colors.get(255),
             )
-        y += bar_h + 6
-
+        pct_text = f"{self._progress}%"
+        pct_bbox = self.fonts.base.font.getbbox(pct_text)
+        pct_w = pct_bbox[2] - pct_bbox[0]
+        pct_x = bar_x + (bar_w - pct_w) // 2
+        pct_y = y + 1
         self.draw.text(
-            (0, y),
-            f"{self._progress}%",
-            font=self.fonts.bold.font,
-            fill=self.colors.get(192),
+            (pct_x, pct_y),
+            pct_text,
+            font=self.fonts.base.font,
+            fill=self.colors.get(0) if self._progress > 45 else self.colors.get(192),
         )
-        y += 16
+        y += bar_h + 4
 
         # Use TextLayouter for scrollable status text
         self._status_layout.draw((0, y))
