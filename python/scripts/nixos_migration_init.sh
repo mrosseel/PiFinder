@@ -45,15 +45,20 @@ PROGRESS="/bin/migration_progress"
 # Migration state directory on new root (for phase 3 resume)
 MIGRATION_STATE_DIR="/var/lib/pifinder-migration"
 
+STAGE_NUM=0
+STAGE_TOTAL=25
+
 show() {
     local pct="$1"
     local msg="$2"
+    STAGE_NUM=$((STAGE_NUM + 1))
     echo "[${pct}%] ${msg}"
-    [ -x "${PROGRESS}" ] && "${PROGRESS}" "${pct}" "${msg}" 2>/dev/null || true
+    [ -x "${PROGRESS}" ] && "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
 }
 
 fail() {
-    show 0 "FAILED: $1"
+    [ -x "${PROGRESS}" ] && "${PROGRESS}" 0 0 0 "FAILED: $1" 2>/dev/null || true
+    echo "[FAILED] $1"
     echo "MIGRATION FAILED: $1" > /dev/console 2>/dev/null || true
     echo "Dropping to shell for debugging..."
     exec /bin/sh
