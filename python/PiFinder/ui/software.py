@@ -171,9 +171,9 @@ class UISoftware(UIModule):
                     "version_info": {
                         "version": "2.5.0",
                         "type": "upgrade",
-                        "bootstrap_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-bootstrap/pifinder-bootstrap-v2.5.0.tar.gz",
-                        "bootstrap_sha256": "d5e5dc7bfde57bb958d0dc55804af6fb14265f12d9e27a02da0385847f9ba742",
-                        "bootstrap_size_mb": 349,
+                        "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-bootstrap/pifinder-bootstrap-v2.5.0.tar.gz",
+                        "migration_sha256": "d5e5dc7bfde57bb958d0dc55804af6fb14265f12d9e27a02da0385847f9ba742",
+                        "migration_size_mb": 349,
                     },
                     "current_version": self._software_version.strip(),
                 }
@@ -592,7 +592,7 @@ class UIMigrationConfirm(UIModule):
         )
         y += 12
 
-        size_mb = self._version_info.get("bootstrap_size_mb") or self._version_info.get("migration_size_mb", "?")
+        size_mb = self._version_info.get("migration_size_mb", "?")
         self.draw.text(
             (0, y),
             _("Download: {}MB").format(size_mb),
