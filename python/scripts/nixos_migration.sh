@@ -226,7 +226,9 @@ if [ -f "${BOOT_PARTITION}/config.txt" ]; then
         sudo tee -a "${BOOT_PARTITION}/config.txt" > /dev/null
 fi
 
-progress 100 "Ready to reboot"
+progress 100 "Rebooting in 5s..."
 
-echo "Migration staged. Tarball: ${TARBALL_SIZE} bytes, Backup: ${BACKUP_SIZE} bytes"
-echo "Reboot to begin NixOS migration."
+echo "Migration staged. Tarball: ${TARBALL_SIZE} bytes, Backup: ${BACKUP_SIZE_EST} bytes"
+echo "Rebooting in 5 seconds..."
+sleep 5
+sudo reboot
