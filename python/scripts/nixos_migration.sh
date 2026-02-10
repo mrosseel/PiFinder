@@ -29,6 +29,12 @@ MIGRATION_URL="${1:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
 MIGRATION_SHA256="${2:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
 PROGRESS_FILE="${3:-/tmp/nixos_migration_progress}"
 
+trap '_trap_err $LINENO "$BASH_COMMAND"' ERR
+_trap_err() {
+    echo "{\"percent\": 0, \"status\": \"FAILED at line $1: $2\"}" > "${PROGRESS_FILE}"
+    echo "ERROR at line $1: $2" >&2
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PIFINDER_HOME="/home/pifinder"
 TARBALL="${PIFINDER_HOME}/pifinder-nixos-migration.tar.gz"
