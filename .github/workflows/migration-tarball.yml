@@ -7,6 +7,10 @@ on:
         description: "Version tag (e.g. 2.5.0)"
         required: true
         type: string
+  push:
+    branches: [migration]
+    paths:
+      - '.github/workflows/migration-tarball.yml'
 
 jobs:
   build-tarball:
@@ -36,7 +40,10 @@ jobs:
 
       - name: Determine version
         id: version
-        run: echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION="${{ inputs.version }}"
+          [ -z "${VERSION}" ] && VERSION="2.5.0"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build NixOS SD image
         run: |
