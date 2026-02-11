@@ -431,8 +431,8 @@ def start_nixos_migration(version_info: dict) -> None:
     """
     url = version_info.get("migration_url", "")
     sha256 = version_info.get("migration_sha256", "")
-    if not url or not sha256:
-        raise ValueError("Missing migration_url or migration_sha256")
+    if not url:
+        raise ValueError("Missing migration_url")
 
     logger.info(f"SYS: Starting NixOS migration to {version_info.get('version', '?')}")
 

@@ -11,7 +11,7 @@
 #   4. Extract NixOS from staging area
 #   5. Restore user data and WiFi credentials
 #
-# Usage: nixos_migration.sh <migration_url> <sha256> [progress_file]
+# Usage: nixos_migration.sh <migration_url> [sha256] [progress_file]
 #
 # Exit codes:
 #   0 - Success (initramfs staged, ready to reboot)
@@ -25,8 +25,8 @@ set -euo pipefail
 
 export PATH="/usr/sbin:/sbin:${PATH}"
 
-MIGRATION_URL="${1:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
-MIGRATION_SHA256="${2:?Usage: nixos_migration.sh <url> <sha256> [progress_file]}"
+MIGRATION_URL="${1:?Usage: nixos_migration.sh <url> [sha256] [progress_file]}"
+MIGRATION_SHA256="${2:-}"
 PROGRESS_FILE="${3:-/tmp/nixos_migration_progress}"
 
 trap '_trap_err $LINENO "$BASH_COMMAND"' ERR
@@ -102,11 +102,16 @@ progress 5 "Pre-flight OK"
 # --- Phase 2: Download tarball ---
 SKIP_DOWNLOAD=false
 if [ -f "${TARBALL}" ]; then
-    progress 10 "Verifying existing download"
-    EXISTING_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
-    if [ "${EXISTING_SHA256}" = "${MIGRATION_SHA256}" ]; then
-        progress 60 "Using cached download"
+    if [ -z "${MIGRATION_SHA256}" ]; then
+        progress 60 "Using cached download (no checksum)"
         SKIP_DOWNLOAD=true
+    else
+        progress 10 "Verifying existing download"
+        EXISTING_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+        if [ "${EXISTING_SHA256}" = "${MIGRATION_SHA256}" ]; then
+            progress 60 "Using cached download"
+            SKIP_DOWNLOAD=true
+        fi
     fi
 fi
 
@@ -126,17 +131,20 @@ if [ "${SKIP_DOWNLOAD}" = false ]; then
         fail 2 "Download failed"
     fi
 
-    progress 60 "Verifying checksum"
-
     # --- Phase 3: Verify checksum ---
-    ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
-    if [ "${ACTUAL_SHA256}" != "${MIGRATION_SHA256}" ]; then
-        rm -f "${TARBALL}"
-        fail 3 "Checksum mismatch"
+    if [ -z "${MIGRATION_SHA256}" ]; then
+        progress 60 "SHA256 not provided, skipping verification"
+    else
+        progress 60 "Verifying checksum"
+        ACTUAL_SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+        if [ "${ACTUAL_SHA256}" != "${MIGRATION_SHA256}" ]; then
+            rm -f "${TARBALL}"
+            fail 3 "Checksum mismatch"
+        fi
     fi
 fi
 
-progress 65 "Checksum OK"
+progress 65 "Download OK"
 
 # --- Phase 4: Calculate sizes (backup created in initramfs to save space) ---
 progress 68 "Calculating sizes"

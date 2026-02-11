@@ -1,8 +1,12 @@
+from unittest.mock import patch, MagicMock
+
 import pytest
+import requests
 
 from PiFinder.ui.software import (
     update_needed,
     _strip_markdown,
+    _fetch_migration_gate,
     _UNLOCK_SEQUENCE,
 )
 
@@ -73,3 +77,53 @@ class TestStripMarkdown:
         assert "Title" in result
         assert "bold" in result
         assert "**" not in result
+
+
+def _mock_response(text, status_code=200):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    return resp
+
+
+@pytest.mark.unit
+class TestFetchMigrationGate:
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_true_when_gate_is_1(self, mock_get):
+        mock_get.return_value = _mock_response("1")
+        assert _fetch_migration_gate() is True
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_true_when_gate_is_1_with_whitespace(self, mock_get):
+        mock_get.return_value = _mock_response("1\n")
+        assert _fetch_migration_gate() is True
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_when_gate_is_0(self, mock_get):
+        mock_get.return_value = _mock_response("0")
+        assert _fetch_migration_gate() is False
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_when_empty(self, mock_get):
+        mock_get.return_value = _mock_response("")
+        assert _fetch_migration_gate() is False
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_on_http_error(self, mock_get):
+        mock_get.return_value = _mock_response("1", status_code=404)
+        assert _fetch_migration_gate() is False
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_on_connection_error(self, mock_get):
+        mock_get.side_effect = requests.exceptions.ConnectionError
+        assert _fetch_migration_gate() is False
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_on_timeout(self, mock_get):
+        mock_get.side_effect = requests.exceptions.Timeout
+        assert _fetch_migration_gate() is False
+
+    @patch("PiFinder.ui.software.requests.get")
+    def test_returns_false_for_arbitrary_text(self, mock_get):
+        mock_get.return_value = _mock_response("yes")
+        assert _fetch_migration_gate() is False

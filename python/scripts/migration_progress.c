@@ -179,12 +179,19 @@ static void gpio_set(struct gpio_v2_line_request *req, int value)
 
 static void spi_write(const uint8_t *data, size_t len)
 {
-    struct spi_ioc_transfer tr = {0};
-    tr.tx_buf = (unsigned long)data;
-    tr.len = len;
-    tr.speed_hz = SPI_SPEED;
-    tr.bits_per_word = 8;
-    ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
+    /* Chunk large transfers - SPI driver may limit to 4KB */
+    const size_t chunk_size = 4096;
+    while (len > 0) {
+        size_t this_len = len > chunk_size ? chunk_size : len;
+        struct spi_ioc_transfer tr = {0};
+        tr.tx_buf = (unsigned long)data;
+        tr.len = this_len;
+        tr.speed_hz = SPI_SPEED;
+        tr.bits_per_word = 8;
+        ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
+        data += this_len;
+        len -= this_len;
+    }
 }
 
 static void ssd1351_cmd(uint8_t cmd)
@@ -206,8 +213,20 @@ static void ssd1351_cmd_data(uint8_t cmd, const uint8_t *data, size_t len)
         ssd1351_data(data, len);
 }
 
+static int skip_reset = 0;  /* set via --update flag in main */
+static int display_on = 0;
+
 static void ssd1351_init(void)
 {
+    uint8_t d;
+
+    if (skip_reset) {
+        /* Just ensure display is on, skip full init */
+        ssd1351_cmd(0xAF);
+        display_on = 1;
+        return;
+    }
+
     /* Hardware reset */
     gpio_set(&rst_req, 1);
     msleep(10);
@@ -216,11 +235,11 @@ static void ssd1351_init(void)
     gpio_set(&rst_req, 1);
     msleep(10);
 
+    /* Init sequence matching luma.oled exactly */
     ssd1351_cmd(0xFD); /* Unlock */
-    uint8_t d;
     d = 0x12; ssd1351_data(&d, 1);
 
-    ssd1351_cmd(0xFD); /* Unlock */
+    ssd1351_cmd(0xFD); /* Unlock commands */
     d = 0xB1; ssd1351_data(&d, 1);
 
     ssd1351_cmd(0xAE); /* Display off */
@@ -231,9 +250,6 @@ static void ssd1351_init(void)
     ssd1351_cmd(0xCA); /* Mux ratio */
     d = 0x7F; ssd1351_data(&d, 1);
 
-    ssd1351_cmd(0xA0); /* Remap/color depth */
-    d = 0x74; ssd1351_data(&d, 1); /* BGR, 65k color, COM split */
-
     ssd1351_cmd(0x15); /* Column address */
     uint8_t col[2] = {0x00, 0x7F};
     ssd1351_data(col, 2);
@@ -241,6 +257,9 @@ static void ssd1351_init(void)
     ssd1351_cmd(0x75); /* Row address */
     uint8_t row[2] = {0x00, 0x7F};
     ssd1351_data(row, 2);
+
+    ssd1351_cmd(0xA0); /* Remap/color depth */
+    d = 0x74; ssd1351_data(&d, 1); /* BGR, 65k color, COM split */
 
     ssd1351_cmd(0xA1); /* Start line */
     d = 0x00; ssd1351_data(&d, 1);
@@ -257,30 +276,33 @@ static void ssd1351_init(void)
     ssd1351_cmd(0xB1); /* Precharge */
     d = 0x32; ssd1351_data(&d, 1);
 
-    ssd1351_cmd(0xBE); /* VCOMH */
-    d = 0x05; ssd1351_data(&d, 1);
-
-    ssd1351_cmd(0xA6); /* Normal display */
-
-    ssd1351_cmd(0xC1); /* Contrast */
-    uint8_t contrast[3] = {0xC8, 0x80, 0xC8};
-    ssd1351_data(contrast, 3);
-
-    ssd1351_cmd(0xC7); /* Master contrast */
-    d = 0x0F; ssd1351_data(&d, 1);
-
     ssd1351_cmd(0xB4); /* VSL */
     uint8_t vsl[3] = {0xA0, 0xB5, 0x55};
     ssd1351_data(vsl, 3);
 
+    ssd1351_cmd(0xBE); /* VCOMH */
+    d = 0x05; ssd1351_data(&d, 1);
+
+    ssd1351_cmd(0xC7); /* Master contrast */
+    d = 0x0F; ssd1351_data(&d, 1);
+
     ssd1351_cmd(0xB6); /* Precharge2 */
     d = 0x01; ssd1351_data(&d, 1);
 
-    ssd1351_cmd(0xAF); /* Display on */
+    ssd1351_cmd(0xA6); /* Normal display */
+
+    /* NOTE: Display ON (0xAF) moved to after framebuffer flush */
 }
 
 static void ssd1351_flush(void)
 {
+    /* Set contrast before first frame (matching luma) */
+    if (!display_on) {
+        ssd1351_cmd(0xC1); /* Contrast */
+        uint8_t contrast[3] = {0xFF, 0xFF, 0xFF};
+        ssd1351_data(contrast, 3);
+    }
+
     ssd1351_cmd(0x15);
     uint8_t col[2] = {0x00, 0x7F};
     ssd1351_data(col, 2);
@@ -298,6 +320,12 @@ static void ssd1351_flush(void)
         buf[i * 2 + 1] = framebuf[i] & 0xFF;
     }
     ssd1351_data(buf, sizeof(buf));
+
+    /* Turn display on after first frame */
+    if (!display_on) {
+        ssd1351_cmd(0xAF); /* Display on */
+        display_on = 1;
+    }
 }
 
 static void fb_clear(uint16_t color)
@@ -357,22 +385,33 @@ static void fb_string_centered(int y, const char *s, uint16_t color, int scale)
     fb_string(x, y, s, color, scale);
 }
 
-static void draw_progress(int percent, const char *message)
+static void draw_progress(int percent, const char *stage, int stage_num, int stage_total)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
     fb_clear(COL_BLACK);
 
-    /* Title */
-    fb_string_centered(8, "PiFinder", COL_RED, 2);
-    fb_string_centered(30, "Migration", COL_RED, 2);
+    /* Warning banner at top */
+    fb_rect(0, 0, WIDTH, 12, COL_DKRED);
+    fb_string_centered(2, "DO NOT POWER OFF", COL_RED, 1);
 
-    /* Progress bar outline */
+    /* Title */
+    fb_string_centered(18, "NixOS", COL_RED, 2);
+    fb_string_centered(38, "Migration", COL_RED, 1);
+
+    /* Stage indicator (e.g., "3/7") */
+    if (stage_total > 0) {
+        char stage_str[16];
+        snprintf(stage_str, sizeof(stage_str), "Stage %d/%d", stage_num, stage_total);
+        fb_string_centered(52, stage_str, COL_DKGRAY, 1);
+    }
+
+    /* Progress bar */
     int bar_x = 10;
-    int bar_y = 58;
+    int bar_y = 65;
     int bar_w = WIDTH - 20;
-    int bar_h = 14;
+    int bar_h = 12;
 
     /* Border */
     fb_rect(bar_x, bar_y, bar_w, 1, COL_DKGRAY);
@@ -385,20 +424,23 @@ static void draw_progress(int percent, const char *message)
     if (fill_w > 0)
         fb_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, COL_RED);
 
-    /* Dark red background for unfilled portion */
+    /* Dark red background for unfilled */
     int unfill_x = bar_x + 2 + fill_w;
     int unfill_w = (bar_w - 4) - fill_w;
     if (unfill_w > 0)
         fb_rect(unfill_x, bar_y + 2, unfill_w, bar_h - 4, COL_DKRED);
 
-    /* Percentage text */
+    /* Percentage */
     char pct_str[8];
     snprintf(pct_str, sizeof(pct_str), "%d%%", percent);
-    fb_string_centered(80, pct_str, COL_WHITE, 2);
+    fb_string_centered(82, pct_str, COL_RED, 2);
 
-    /* Status message */
-    if (message && *message)
-        fb_string_centered(105, message, COL_DKGRAY, 1);
+    /* Current stage name */
+    if (stage && *stage)
+        fb_string_centered(105, stage, COL_RED, 1);
+
+    /* Bottom warning */
+    fb_string_centered(118, "Please wait...", COL_DKGRAY, 1);
 
     ssd1351_flush();
 }
@@ -445,13 +487,28 @@ static void hw_cleanup(void)
 
 int main(int argc, char *argv[])
 {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <percent> <message>\n", argv[0]);
+    int arg_offset = 0;
+
+    if (argc >= 2 && strcmp(argv[1], "--update") == 0) {
+        skip_reset = 1;
+        arg_offset = 1;
+    }
+
+    if (argc - arg_offset < 5) {
+        fprintf(stderr, "Usage: %s [--update] <percent> <stage_num> <stage_total> <stage_name>\n", argv[0]);
+        fprintf(stderr, "  --update     Skip reset, just update display\n");
+        fprintf(stderr, "  percent      0-100\n");
+        fprintf(stderr, "  stage_num    Current stage number (1-based)\n");
+        fprintf(stderr, "  stage_total  Total number of stages\n");
+        fprintf(stderr, "  stage_name   Description of current stage\n");
+        fprintf(stderr, "\nExample: %s 50 3 7 'Extracting system'\n", argv[0]);
         return 1;
     }
 
-    int percent = atoi(argv[1]);
-    const char *message = argv[2];
+    int percent = atoi(argv[1 + arg_offset]);
+    int stage_num = atoi(argv[2 + arg_offset]);
+    int stage_total = atoi(argv[3 + arg_offset]);
+    const char *stage_name = argv[4 + arg_offset];
 
     if (hw_init() < 0) {
         fprintf(stderr, "Hardware init failed\n");
@@ -459,7 +516,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    draw_progress(percent, message);
+    draw_progress(percent, stage_name, stage_num, stage_total);
     hw_cleanup();
     return 0;
 }
