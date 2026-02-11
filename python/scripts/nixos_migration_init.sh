@@ -269,7 +269,7 @@ TARBALL_SKIP_BLOCKS=$(( TARBALL_STAGING_BYTE / 4096 ))
 TARBALL_COUNT_BLOCKS=$(( (TARBALL_SIZE + 4095) / 4096 ))
 
 dd if="${SD_DEV}" bs=4096 skip="${TARBALL_SKIP_BLOCKS}" count="${TARBALL_COUNT_BLOCKS}" 2>/dev/null | \
-    gunzip | tar xf - -C "${MOUNT_NEW}" || fail "Tarball extraction failed"
+    zstd -d | tar xf - -C "${MOUNT_NEW}" || fail "Tarball extraction failed"
 
 # Move boot/ contents to boot partition
 mkdir -p "${MOUNT_BOOT}"

@@ -26,7 +26,7 @@ _UNLOCK_SEQUENCE = ["square"] * 7
 _MIGRATION_VERSION_INFO = {
     "version": "2.5.0",
     "type": "upgrade",
-    "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-migration/pifinder-nixos-v2.5.0.tar.gz",
+    "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-migration/pifinder-nixos-v2.5.0.tar.zst",
     "migration_size_mb": 900,
 }
 

@@ -37,7 +37,7 @@ _trap_err() {
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PIFINDER_HOME="/home/pifinder"
-TARBALL="${PIFINDER_HOME}/pifinder-nixos-migration.tar.gz"
+TARBALL="${PIFINDER_HOME}/pifinder-nixos-migration.tar.zst"
 BACKUP_TAR="${PIFINDER_HOME}/pifinder_backup.tar.gz"
 BOOT_PARTITION="/boot"
 INITRAMFS_DIR="/tmp/nixos_initramfs"
@@ -79,7 +79,7 @@ copy_with_libs() {
 
 # --- Phase 0: Install required packages ---
 progress 0 "Installing dependencies"
-for pkg in e2fsprogs dosfstools fdisk; do
+for pkg in e2fsprogs dosfstools fdisk zstd; do
     if ! dpkg -s "${pkg}" >/dev/null 2>&1; then
         sudo apt-get install -y "${pkg}" || fail 1 "Failed to install ${pkg}"
     fi
@@ -169,7 +169,7 @@ progress 78 "Building initramfs"
 rm -rf "${INITRAMFS_DIR}"
 mkdir -p "${INITRAMFS_DIR}"/{bin,lib,dev,proc,sys,mnt,tmp}
 
-# Busybox (provides sh, mount, umount, dd, tar, gunzip, awk, sed, etc.)
+# Busybox (provides sh, mount, umount, dd, tar, awk, sed, gunzip for backup, etc.)
 if command -v busybox >/dev/null 2>&1; then
     copy_with_libs "$(command -v busybox)" "${INITRAMFS_DIR}"
 else
@@ -177,10 +177,10 @@ else
 fi
 
 # Filesystem tools (required for shrink + reformat)
-for tool in e2fsck resize2fs mke2fs mkfs.vfat sfdisk; do
+for tool in e2fsck resize2fs mke2fs mkfs.vfat sfdisk zstd; do
     tool_path=$(command -v "${tool}" 2>/dev/null || true)
     if [ -z "${tool_path}" ]; then
-        fail 5 "${tool} not found — install e2fsprogs dosfstools util-linux"
+        fail 5 "${tool} not found — install e2fsprogs dosfstools util-linux zstd"
     fi
     copy_with_libs "${tool_path}" "${INITRAMFS_DIR}"
 done

@@ -65,7 +65,7 @@ jobs:
       - name: Create migration tarball
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          TARBALL="pifinder-nixos-v${VERSION}.tar.gz"
+          TARBALL="pifinder-nixos-v${VERSION}.tar.zst"
 
           cat > /tmp/tarball-staging/manifest.json <<EOF
           {
@@ -76,7 +76,7 @@ jobs:
           }
           EOF
 
-          sudo tar -C /tmp/tarball-staging -czf "/tmp/${TARBALL}" boot rootfs manifest.json
+          sudo tar -C /tmp/tarball-staging -cf - boot rootfs manifest.json | zstd -T0 -19 -o "/tmp/${TARBALL}"
           sudo rm -rf /tmp/tarball-staging
 
           echo "TARBALL=/tmp/${TARBALL}" >> "$GITHUB_ENV"
