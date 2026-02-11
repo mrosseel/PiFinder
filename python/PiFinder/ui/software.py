@@ -18,9 +18,26 @@ sys_utils = utils.get_sys_utils()
 logger = logging.getLogger("UISoftware")
 
 REQUEST_TIMEOUT = 10
+MIGRATION_GATE_URL = "https://raw.githubusercontent.com/brickbots/PiFinder/release/migration_gate.txt"
 
 # Secret unlock: 7x square button
 _UNLOCK_SEQUENCE = ["square"] * 7
+
+_MIGRATION_VERSION_INFO = {
+    "version": "2.5.0",
+    "type": "upgrade",
+    "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-migration/pifinder-nixos-v2.5.0.tar.gz",
+    "migration_size_mb": 900,
+}
+
+
+def _fetch_migration_gate() -> bool:
+    """Check remote gate file. Returns True only if content is '1'."""
+    try:
+        res = requests.get(MIGRATION_GATE_URL, timeout=REQUEST_TIMEOUT)
+        return res.status_code == 200 and res.text.strip() == "1"
+    except requests.exceptions.RequestException:
+        return False
 
 
 def update_needed(current_version: str, repo_version: str) -> bool:
@@ -85,26 +102,29 @@ class UISoftware(UIModule):
             self._key_buffer = self._key_buffer[-len(_UNLOCK_SEQUENCE) :]
         if self._key_buffer == _UNLOCK_SEQUENCE:
             self._key_buffer = []
-            self.message("System Upgrade", 1)
-            self.add_to_stack(
-                {
-                    "class": UIMigrationConfirm,
-                    "version_info": {
-                        "version": "2.5.0",
-                        "type": "upgrade",
-                        "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-bootstrap/pifinder-bootstrap-v2.5.0.tar.gz",
-                        "migration_sha256": "d5e5dc7bfde57bb958d0dc55804af6fb14265f12d9e27a02da0385847f9ba742",
-                        "migration_size_mb": 349,
-                    },
-                    "current_version": self._software_version.strip(),
-                }
-            )
+            self._trigger_migration()
+
+    def _trigger_migration(self):
+        """Push UIMigrationConfirm onto the UI stack."""
+        self.message("System Upgrade", 1)
+        self.add_to_stack(
+            {
+                "class": UIMigrationConfirm,
+                "version_info": _MIGRATION_VERSION_INFO,
+                "current_version": self._software_version.strip(),
+            }
+        )
 
     def get_release_version(self):
         """
         Fetches current release version from
-        github, sets class variable if found
+        github, sets class variable if found.
+        Also checks the remote migration gate.
         """
+        if _fetch_migration_gate():
+            self._trigger_migration()
+            return
+
         try:
             res = requests.get(
                 "https://raw.githubusercontent.com/brickbots/PiFinder/release/version.txt"
@@ -341,7 +361,18 @@ class UIMigrationConfirm(UIModule):
             font=self.fonts.base.font,
             fill=self.colors.get(128),
         )
-        y += 16
+        y += 11
+
+        if not self._version_info.get("migration_sha256"):
+            self.draw.text(
+                (0, y),
+                _("No checksum avail."),
+                font=self.fonts.base.font,
+                fill=self.colors.get(128),
+            )
+            y += 11
+
+        y += 5
 
         # Options
         for i, label in enumerate(self._options):

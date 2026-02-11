@@ -35,7 +35,7 @@ jobs:
           fi
 
       - name: Build NixOS SD image
-        run: nix build .#images.pifinder --no-link --print-out-paths > /tmp/image_path
+        run: nix build github:mrosseel/PiFinder/nixos#images.pifinder --no-link --print-out-paths > /tmp/image_path
 
       - name: Extract boot and rootfs from image
         run: |

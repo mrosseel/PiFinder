@@ -1,19 +1,16 @@
 #!/bin/busybox sh
-# nixos_migration_init.sh - Initramfs init for NixOS bootstrap migration
+# nixos_migration_init.sh - Initramfs init for NixOS migration
 #
 # Runs entirely from RAM. Strategy:
 #   1. Save WiFi credentials to RAM FIRST (critical for recovery)
 #   2. Shrink root FS + partition → frees space at end of SD
 #   3. Copy tarball + backup from root to the freed staging area
 #   4. Format both partitions
-#   5. Extract minimal NixOS from staging area
+#   5. Extract full NixOS from staging area
 #   6. Migrate WiFi IMMEDIATELY (before user data - enables network recovery)
-#   7. Write resume metadata (allows phase 3 to resume if interrupted)
-#   8. Restore user data, expand partition, reboot
-#
-# Phase 3 (bootstrap NixOS) will then:
-#   - Resume user data restore if interrupted
-#   - Run nixos-rebuild switch to become full PiFinder NixOS
+#   7. Write resume metadata (allows recovery if interrupted)
+#   8. Restore user data, expand partition
+#   9. Clean up boot artifacts, reboot into NixOS
 
 set -e
 
@@ -42,7 +39,7 @@ MOUNT_NEW="/mnt/new"
 MOUNT_BOOT="/mnt/boot"
 PROGRESS="/bin/migration_progress"
 
-# Migration state directory on new root (for phase 3 resume)
+# Migration state directory on new root (for recovery resume)
 MIGRATION_STATE_DIR="/var/lib/pifinder-migration"
 
 STAGE_NUM=0
@@ -233,7 +230,7 @@ rm -f "${BACKUP_TMP}"
 
 umount "${MOUNT_ROOT}"
 
-# Write header with actual backup size (PFMIGRATE2 = bootstrap flow)
+# Write header with actual backup size
 HEADER_FILE="/tmp/staging_header"
 dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
 printf "PFMIGRATE2\ntarball_size=%s\nbackup_size=%s\n" \
@@ -260,7 +257,7 @@ show 56 "Format root"
 mkfs.ext4 -F -L NIXOS_SD "${ROOT_DEV}" || fail "mkfs.ext4 failed"
 
 # -------------------------------------------------------------------
-# Phase 5: Extract minimal NixOS from staging area
+# Phase 5: Extract NixOS from staging area
 # -------------------------------------------------------------------
 
 show 58 "Extracting NixOS"
@@ -297,22 +294,27 @@ fi
 
 rm -f "${MOUNT_NEW}/manifest.json"
 
+# Copy OLED progress binary to new root
+if [ -x "${PROGRESS}" ]; then
+    cp "${PROGRESS}" "${MOUNT_NEW}/bin/migration_progress" 2>/dev/null || true
+    chmod 755 "${MOUNT_NEW}/bin/migration_progress" 2>/dev/null || true
+fi
+
 # -------------------------------------------------------------------
 # Phase 6: Migrate WiFi IMMEDIATELY (before user data)
 # -------------------------------------------------------------------
-# This is critical: if we crash during user data restore, minimal NixOS
-# will still have network access for phase 3 to complete the migration.
+# Critical: if we crash during user data restore, NixOS will still
+# have network access for recovery.
 #
-# Bootstrap NixOS uses iwd (not NetworkManager) for minimal size.
-# iwd stores networks in /var/lib/iwd/{SSID}.psk files.
+# Full PiFinder NixOS uses NetworkManager. We write .nmconnection
+# files directly — NM reads them on boot without nmcli.
 
 show 60 "Migrating WiFi (EARLY)"
 
-IWD_DIR="${MOUNT_NEW}/var/lib/iwd"
-mkdir -p "${IWD_DIR}"
-chmod 700 "${IWD_DIR}"
+NM_DIR="${MOUNT_NEW}/etc/NetworkManager/system-connections"
+mkdir -p "${NM_DIR}"
 
-# Parse wpa_supplicant.conf and create iwd network files
+# Parse wpa_supplicant.conf and create NetworkManager connection files
 if [ -f /tmp/wifi/wpa_supplicant.conf ]; then
     SSID=""
     PSK=""
@@ -329,27 +331,49 @@ if [ -f /tmp/wifi/wpa_supplicant.conf ]; then
                 ;;
             "}")
                 if [ "${IN_NET}" = "1" ] && [ -n "${SSID}" ]; then
-                    # iwd filename format: encode special chars as =XX (hex)
-                    # For simplicity, replace common problematic chars
-                    IWD_FN=$(printf '%s' "${SSID}" | sed 's/ /=20/g; s/\//=2f/g; s/\\/=5c/g')
+                    NM_FILE="${NM_DIR}/${SSID}.nmconnection"
 
                     if [ -n "${PSK}" ]; then
-                        # WPA-PSK network
-                        IWD_FILE="${IWD_DIR}/${IWD_FN}.psk"
-                        cat > "${IWD_FILE}" <<IWDEOF
-[Security]
-Passphrase=${PSK}
-IWDEOF
+                        cat > "${NM_FILE}" <<NMEOF
+[connection]
+id=${SSID}
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=${SSID}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${PSK}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+NMEOF
                     else
-                        # Open network (no PSK)
-                        IWD_FILE="${IWD_DIR}/${IWD_FN}.open"
-                        cat > "${IWD_FILE}" <<IWDEOF
-[Settings]
-AutoConnect=true
-IWDEOF
+                        cat > "${NM_FILE}" <<NMEOF
+[connection]
+id=${SSID}
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=${SSID}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+NMEOF
                     fi
 
-                    chmod 600 "${IWD_FILE}"
+                    chmod 600 "${NM_FILE}"
                 fi
                 IN_NET=0
                 ;;
@@ -363,23 +387,28 @@ IWDEOF
     done < /tmp/wifi/wpa_supplicant.conf
 fi
 
+# Also copy any existing NM connections saved from old root
+if [ -d /tmp/wifi/nm-connections ]; then
+    cp -a /tmp/wifi/nm-connections/. "${NM_DIR}/" 2>/dev/null || true
+fi
+
 # Force WiFi configs to disk immediately
 sync
 
 show 61 "WiFi migrated"
 
 # -------------------------------------------------------------------
-# Phase 7: Write resume metadata for phase 3
+# Phase 7: Write resume metadata
 # -------------------------------------------------------------------
-# If we crash during user data restore, phase 3 can read this metadata
-# and resume the restore from the staging area.
+# If we crash during user data restore, a recovery service can read
+# this metadata and resume the restore from the staging area.
 
 show 62 "Writing resume metadata"
 
 STAGING_STATE_DIR="${MOUNT_NEW}${MIGRATION_STATE_DIR}"
 mkdir -p "${STAGING_STATE_DIR}"
 
-# Calculate offsets for phase 3 to use
+# Calculate offsets for recovery to use
 STAGING_OFFSET_BLOCKS=$(( STAGING_START_BYTE / 4096 ))
 BACKUP_OFFSET_BLOCKS=$(( BACKUP_STAGING_BYTE / 4096 ))
 
@@ -412,7 +441,7 @@ BACKUP_COUNT_BLOCKS=$(( (BACKUP_SIZE + 4095) / 4096 ))
 dd if="${SD_DEV}" bs=4096 skip="${BACKUP_SKIP_BLOCKS}" count="${BACKUP_COUNT_BLOCKS}" 2>/dev/null | \
     gunzip | tar xf - -C "${MOUNT_NEW}/home/pifinder/" || fail "User data restore failed"
 
-# Mark restore complete (so phase 3 doesn't try to resume)
+# Mark restore complete (so recovery doesn't try to resume)
 touch "${STAGING_STATE_DIR}/restore-complete"
 
 show 66 "User data restored"
@@ -429,13 +458,13 @@ chown -R 1000:100 "${MOUNT_NEW}/home/pifinder" 2>/dev/null || true
 # Update state
 cat > "${STAGING_STATE_DIR}/state" <<EOF
 PHASE=2
-PERCENT=68
+PERCENT=70
 STATUS=Expanding partition
 EOF
 
 umount "${MOUNT_NEW}"
 
-show 68 "Expanding partition"
+show 70 "Expanding partition"
 
 # Expand partition to fill card
 echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
@@ -445,14 +474,24 @@ sleep 1
 # Expand filesystem
 resize2fs "${ROOT_DEV}" 2>/dev/null || true
 
-show 69 "Syncing"
+show 80 "Cleaning up boot"
+
+# Remove migration artifacts from boot partition
+rm -f "${MOUNT_BOOT}/nixos_migration"
+rm -f "${MOUNT_BOOT}/initramfs-migration.gz"
+
+# Restore original config.txt if backup exists
+if [ -f "${MOUNT_BOOT}/config.txt.premigration" ]; then
+    mv "${MOUNT_BOOT}/config.txt.premigration" "${MOUNT_BOOT}/config.txt"
+fi
+
+show 90 "Syncing"
 sync
 
 umount "${MOUNT_BOOT}" 2>/dev/null || true
 
-show 70 "Ready for phase 3"
-sleep 2
+show 100 "Complete"
+sleep 3
 
-echo "Rebooting into bootstrap NixOS..."
-echo "Phase 3 will run nixos-rebuild switch to complete migration."
+echo "Rebooting into NixOS..."
 reboot -f
