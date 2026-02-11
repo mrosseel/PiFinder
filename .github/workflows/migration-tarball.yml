@@ -52,7 +52,7 @@ jobs:
           sudo mount "${LOOP}p1" /mnt/boot
           sudo mount "${LOOP}p2" /mnt/root
 
-          rm -rf /tmp/tarball-staging
+          sudo rm -rf /tmp/tarball-staging
           mkdir -p /tmp/tarball-staging
           sudo cp -a /mnt/boot /tmp/tarball-staging/boot
           sudo cp -a /mnt/root /tmp/tarball-staging/rootfs
@@ -75,8 +75,8 @@ jobs:
           }
           EOF
 
-          tar -C /tmp/tarball-staging -czf "/tmp/${TARBALL}" boot rootfs manifest.json
-          rm -rf /tmp/tarball-staging
+          sudo tar -C /tmp/tarball-staging -czf "/tmp/${TARBALL}" boot rootfs manifest.json
+          sudo rm -rf /tmp/tarball-staging
 
           echo "TARBALL=/tmp/${TARBALL}" >> "$GITHUB_ENV"
           echo "TARBALL_NAME=${TARBALL}" >> "$GITHUB_ENV"
