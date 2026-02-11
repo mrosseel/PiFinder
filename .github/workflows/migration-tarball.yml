@@ -37,7 +37,7 @@ jobs:
       - name: Extract boot and rootfs from image
         run: |
           IMAGE_PATH=$(cat /tmp/image_path)
-          IMAGE_FILE=$(find "${IMAGE_PATH}" -name "*.img" -o -name "*.img.zst" | head -1)
+          IMAGE_FILE=$(find "${IMAGE_PATH}" -type f \( -name "*.img" -o -name "*.img.zst" \) | head -1)
 
           if [[ "${IMAGE_FILE}" == *.zst ]]; then
             zstd -d "${IMAGE_FILE}" -o /tmp/pifinder.img
