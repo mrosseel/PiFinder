@@ -14,29 +14,13 @@ on:
 
 jobs:
   build-tarball:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aarch64]
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            extra-platforms = aarch64-linux
-            extra-system-features = big-parallel
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
-        with:
-          name: pifinder
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-
-      - name: Register QEMU binfmt for aarch64
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
 
       - name: Determine version
         id: version
@@ -48,7 +32,6 @@ jobs:
       - name: Build NixOS SD image
         run: |
           nix build github:mrosseel/PiFinder/nixos#images.pifinder \
-            --system aarch64-linux \
             -L --no-link --print-out-paths > /tmp/image_path
 
       - name: Extract boot and rootfs from image
@@ -69,6 +52,7 @@ jobs:
           sudo mount "${LOOP}p1" /mnt/boot
           sudo mount "${LOOP}p2" /mnt/root
 
+          rm -rf /tmp/tarball-staging
           mkdir -p /tmp/tarball-staging
           sudo cp -a /mnt/boot /tmp/tarball-staging/boot
           sudo cp -a /mnt/root /tmp/tarball-staging/rootfs
@@ -92,6 +76,7 @@ jobs:
           EOF
 
           tar -C /tmp/tarball-staging -czf "/tmp/${TARBALL}" boot rootfs manifest.json
+          rm -rf /tmp/tarball-staging
 
           echo "TARBALL=/tmp/${TARBALL}" >> "$GITHUB_ENV"
           echo "TARBALL_NAME=${TARBALL}" >> "$GITHUB_ENV"
