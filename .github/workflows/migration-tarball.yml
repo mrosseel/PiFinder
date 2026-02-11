@@ -7,13 +7,12 @@ on:
         description: "Version tag (e.g. 2.5.0)"
         required: true
         type: string
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build-tarball:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,21 +20,29 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v30
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
+            extra-platforms = aarch64-linux
+            extra-system-features = big-parallel
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: pifinder
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: Register QEMU binfmt for aarch64
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
 
       - name: Determine version
         id: version
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Build NixOS SD image
-        run: nix build github:mrosseel/PiFinder/nixos#images.pifinder --no-link --print-out-paths > /tmp/image_path
+        run: |
+          nix build github:mrosseel/PiFinder/nixos#images.pifinder \
+            --system aarch64-linux \
+            -L --no-link --print-out-paths > /tmp/image_path
 
       - name: Extract boot and rootfs from image
         run: |
@@ -85,6 +92,14 @@ jobs:
           sha256sum "/tmp/${TARBALL}" | awk '{print $1}' > "/tmp/${TARBALL}.sha256"
           echo "SHA256=$(cat /tmp/${TARBALL}.sha256)" >> "$GITHUB_ENV"
 
+          SIZE_MB=$(( $(stat -c%s "/tmp/${TARBALL}") / 1048576 ))
+          echo "SIZE_MB=${SIZE_MB}" >> "$GITHUB_ENV"
+
+          echo "### Migration Tarball Built" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **File:** ${TARBALL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Size:** ${SIZE_MB} MB" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA256:** \`$(cat /tmp/${TARBALL}.sha256)\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
@@ -93,13 +108,16 @@ jobs:
             ${{ env.TARBALL }}
             ${{ env.TARBALL }}.sha256
 
-      - name: Upload to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}-migration
+          name: PiFinder NixOS Migration v${{ steps.version.outputs.version }}
+          body: |
+            Full NixOS rootfs tarball for migration from Raspbian.
+
+            **Size:** ${{ env.SIZE_MB }} MB
+            **SHA256:** `${{ env.SHA256 }}`
           files: |
             ${{ env.TARBALL }}
             ${{ env.TARBALL }}.sha256
-          body: |
-            Migration tarball for NixOS upgrade.
-            SHA256: `${{ env.SHA256 }}`
