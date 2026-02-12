@@ -280,25 +280,6 @@ if [ -d "${MOUNT_NEW}/boot" ]; then
     rm -rf "${MOUNT_NEW}/boot"
 fi
 
-# Move rootfs/ contents to actual root (tarball has rootfs/ prefix)
-if [ -d "${MOUNT_NEW}/rootfs" ]; then
-    for item in "${MOUNT_NEW}/rootfs"/*; do
-        [ -e "$item" ] && mv "$item" "${MOUNT_NEW}/" 2>/dev/null || true
-    done
-    for item in "${MOUNT_NEW}/rootfs"/.*; do
-        case "$(basename "$item")" in .|..) continue;; esac
-        mv "$item" "${MOUNT_NEW}/" 2>/dev/null || true
-    done
-    rmdir "${MOUNT_NEW}/rootfs" 2>/dev/null || true
-fi
-
-rm -f "${MOUNT_NEW}/manifest.json"
-
-# Copy OLED progress binary to new root
-if [ -x "${PROGRESS}" ]; then
-    cp "${PROGRESS}" "${MOUNT_NEW}/bin/migration_progress" 2>/dev/null || true
-    chmod 755 "${MOUNT_NEW}/bin/migration_progress" 2>/dev/null || true
-fi
 
 # -------------------------------------------------------------------
 # Phase 6: Migrate WiFi IMMEDIATELY (before user data)
@@ -476,14 +457,10 @@ resize2fs "${ROOT_DEV}" 2>/dev/null || true
 
 show 80 "Cleaning up boot"
 
-# Remove migration artifacts from boot partition
+# Remove any migration artifacts that may have survived formatting
 rm -f "${MOUNT_BOOT}/nixos_migration"
 rm -f "${MOUNT_BOOT}/initramfs-migration.gz"
-
-# Restore original config.txt if backup exists
-if [ -f "${MOUNT_BOOT}/config.txt.premigration" ]; then
-    mv "${MOUNT_BOOT}/config.txt.premigration" "${MOUNT_BOOT}/config.txt"
-fi
+rm -f "${MOUNT_BOOT}/config.txt.premigration"
 
 show 90 "Syncing"
 sync
