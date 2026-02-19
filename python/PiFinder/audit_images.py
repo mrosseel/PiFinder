@@ -1,5 +1,4 @@
 #!/usr/bin/python
-from PiFinder.object_images.poss_provider import POSSImageProvider
 # -*- coding:utf-8 -*-
 # mypy: ignore-errors
 """
@@ -7,11 +6,13 @@ This script runs to fetch
 images from AWS
 """
 
-import requests
 import sqlite3
+
+import requests
 from tqdm import tqdm
 
 from PiFinder.object_images import get_display_image
+from PiFinder.object_images.poss_provider import POSSImageProvider
 
 
 def get_catalog_objects():
