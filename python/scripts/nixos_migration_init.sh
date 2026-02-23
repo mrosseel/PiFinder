@@ -2,15 +2,12 @@
 # nixos_migration_init.sh - Initramfs init for NixOS migration
 #
 # Runs entirely from RAM. Strategy:
-#   1. Save WiFi credentials to RAM FIRST (critical for recovery)
-#   2. Shrink root FS + partition → frees space at end of SD
-#   3. Copy tarball + backup from root to the freed staging area
-#   4. Format both partitions
-#   5. Extract full NixOS from staging area
-#   6. Migrate WiFi IMMEDIATELY (before user data - enables network recovery)
-#   7. Write resume metadata (allows recovery if interrupted)
-#   8. Restore user data, expand partition
-#   9. Clean up boot artifacts, reboot into NixOS
+#   1. Save WiFi credentials and user backup to RAM
+#   2. Copy tarball to RAM, unmount old root
+#   3. Format both partitions
+#   4. Extract tarball (boot → p1, rootfs → p2)
+#   5. Restore WiFi + user data, expand partition
+#   6. Reboot into NixOS
 
 set -e
 
@@ -19,6 +16,7 @@ set -e
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 # Shared lib path for dynamically linked tools (e2fsck, mkfs, etc.)
 export LD_LIBRARY_PATH=/lib:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu
@@ -34,16 +32,14 @@ while [ ! -b "${BOOT_DEV}" ] && [ "${n}" -lt 30 ]; do
     n=$((n + 1))
 done
 [ ! -b "${BOOT_DEV}" ] && fail "SD card not found after 30s: ${BOOT_DEV}"
+
 MOUNT_ROOT="/mnt/root"
 MOUNT_NEW="/mnt/new"
 MOUNT_BOOT="/mnt/boot"
 PROGRESS="/bin/migration_progress"
 
-# Migration state directory on new root (for recovery resume)
-MIGRATION_STATE_DIR="/var/lib/pifinder-migration"
-
 STAGE_NUM=0
-STAGE_TOTAL=25
+STAGE_TOTAL=18
 
 show() {
     local pct="$1"
@@ -64,7 +60,7 @@ fail() {
 show 30 "Initramfs started"
 
 # -------------------------------------------------------------------
-# Phase 1: Validate and save WiFi credentials to RAM FIRST
+# Phase 1: Validate
 # -------------------------------------------------------------------
 
 # Check migration flag on boot partition
@@ -76,226 +72,134 @@ if [ ! -f /mnt/bootchk/nixos_migration ]; then
 fi
 umount /mnt/bootchk
 
-# RAM check
-MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-MEM_MB=$((MEM_KB / 1024))
-[ "${MEM_MB}" -lt 1800 ] && fail "Insufficient RAM: ${MEM_MB}MB (need 2048)"
-
 # Read metadata written by pre-migration script
 if [ ! -f /migration_meta ]; then
     fail "migration_meta not found in initramfs"
 fi
 . /migration_meta
-# Now we have: TARBALL_PATH, PIFINDER_DATA_PATH, TARBALL_SIZE, BACKUP_SIZE_EST, STAGING_SIZE_MB
+# Now we have: TARBALL_PATH, TARBALL_SIZE, PIFINDER_DATA_PATH
 
-show 31 "Saving WiFi to RAM"
+# RAM check: tarball + backup + overhead must fit
+MEM_KB=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+MEM_MB=$((MEM_KB / 1024))
+TARBALL_SIZE_MB=$((TARBALL_SIZE / 1048576))
+NEEDED_MB=$((TARBALL_SIZE_MB + 150))  # tarball + backup + overhead
+[ "${MEM_MB}" -lt "${NEEDED_MB}" ] && fail "Insufficient RAM: ${MEM_MB}MB available, need ${NEEDED_MB}MB"
 
-# Mount old root EARLY to save WiFi credentials before any destructive operations
+show 31 "Validated (${MEM_MB}MB free)"
+
+# -------------------------------------------------------------------
+# Phase 2: Save WiFi credentials to RAM
+# -------------------------------------------------------------------
+
+show 33 "Saving WiFi to RAM"
+
 mkdir -p "${MOUNT_ROOT}"
 mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "Cannot mount root"
 
-# Save WiFi credentials to RAM FIRST - critical for recovery
 mkdir -p /tmp/wifi
 WPA_FILE="${MOUNT_ROOT}/etc/wpa_supplicant/wpa_supplicant.conf"
 if [ -f "${WPA_FILE}" ]; then
     cp "${WPA_FILE}" /tmp/wifi/wpa_supplicant.conf
 fi
 
-# Also check for existing NetworkManager connections
 NM_SRC="${MOUNT_ROOT}/etc/NetworkManager/system-connections"
 if [ -d "${NM_SRC}" ]; then
     mkdir -p /tmp/wifi/nm-connections
     cp -a "${NM_SRC}/." /tmp/wifi/nm-connections/ 2>/dev/null || true
 fi
 
-# Verify required files exist
-TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
+# -------------------------------------------------------------------
+# Phase 3: Create user backup in RAM
+# -------------------------------------------------------------------
+
+show 35 "Creating backup"
+
 PIFINDER_DATA_ON_ROOT="${MOUNT_ROOT}${PIFINDER_DATA_PATH}"
-
-[ ! -f "${TARBALL_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "Tarball not found: ${TARBALL_PATH}"; }
-[ ! -d "${PIFINDER_DATA_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "PiFinder_data not found: ${PIFINDER_DATA_PATH}"; }
-
-umount "${MOUNT_ROOT}"
-
-show 32 "Validated"
-
-# -------------------------------------------------------------------
-# Phase 2: Check root filesystem
-# -------------------------------------------------------------------
-
-show 34 "Checking filesystem"
-e2fsck -f -y "${ROOT_DEV}" || fail "e2fsck failed on root"
-
-# -------------------------------------------------------------------
-# Phase 3: Shrink root FS + partition to free staging area
-# -------------------------------------------------------------------
-
-show 36 "Shrinking root FS"
-
-SD_BYTES=$(blockdev --getsize64 "${SD_DEV}")
-SD_SECTORS=$(blockdev --getsz "${SD_DEV}")
-
-# Get current p2 start sector
-P2_START=$(sfdisk -d "${SD_DEV}" 2>/dev/null | grep 'mmcblk0p2' | sed 's/.*start= *//' | sed 's/,.*//')
-[ -z "${P2_START}" ] && fail "Cannot read p2 start sector"
-
-# Calculate new p2 size: current size minus staging area
-STAGING_SECTORS=$(( STAGING_SIZE_MB * 1024 * 1024 / 512 ))
-P2_CURRENT_SECTORS=$(( SD_SECTORS - P2_START ))
-P2_NEW_SECTORS=$(( P2_CURRENT_SECTORS - STAGING_SECTORS ))
-
-[ "${P2_NEW_SECTORS}" -le 0 ] && fail "SD card too small for staging area"
-
-# Shrink the ext4 filesystem first
-BLOCK_SIZE=4096
-P2_NEW_BLOCKS=$(( P2_NEW_SECTORS * 512 / BLOCK_SIZE ))
-
-resize2fs "${ROOT_DEV}" "${P2_NEW_BLOCKS}" || fail "resize2fs failed"
-
-show 38 "Shrinking partition"
-
-echo "${P2_START}, ${P2_NEW_SECTORS}" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || fail "sfdisk failed"
-partprobe "${SD_DEV}" 2>/dev/null || blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
-sleep 1
-
-# Staging area starts right after the shrunk partition
-STAGING_START_BYTE=$(( (P2_START + P2_NEW_SECTORS) * 512 ))
-
-show 40 "Staging area ready"
-
-# -------------------------------------------------------------------
-# Phase 4: Copy tarball + backup to staging area
-# -------------------------------------------------------------------
-
-show 42 "Copying to staging"
-
-mount -t ext4 -o ro "${ROOT_DEV}" "${MOUNT_ROOT}" || fail "Cannot mount shrunk root"
-
-TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
-PIFINDER_DATA_ON_ROOT="${MOUNT_ROOT}${PIFINDER_DATA_PATH}"
-
-# Data layout in staging area:
-#   offset 0:                    header (4096 bytes)
-#   offset 4096:                 tarball (TARBALL_SIZE bytes)
-#   offset 4096+TARBALL_ALIGNED: backup
-TARBALL_ALIGNED=$(( (TARBALL_SIZE + 4095) / 4096 * 4096 ))
-
-TARBALL_STAGING_BYTE=$(( STAGING_START_BYTE + 4096 ))
-BACKUP_STAGING_BYTE=$(( TARBALL_STAGING_BYTE + TARBALL_ALIGNED ))
-
-show 44 "Copying tarball"
-
-dd if="${TARBALL_ON_ROOT}" of="${SD_DEV}" bs=4096 \
-    seek=$(( TARBALL_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Tarball staging failed"
-
-show 48 "Creating backup"
-
-# Create backup in tmpfs (RAM) then copy to staging
-# Busybox tar doesn't support --exclude, so we selectively include:
-# - All files in PiFinder_data root (observations.db, config, etc.)
-# - obslists directory
-# - Truncated log (last 1000 lines)
-# Skip: captures, screenshots, dumps, logs (ephemeral/large data)
-BACKUP_TMP="/tmp/pifinder_backup.tar.gz"
 BACKUP_STAGE="/tmp/backup_stage/PiFinder_data"
 rm -rf /tmp/backup_stage
 mkdir -p "${BACKUP_STAGE}"
 
-# Copy root-level files (observations.db, configs, etc.)
-for f in "${PIFINDER_DATA_ON_ROOT}"/*; do
-    [ -f "$f" ] && cp "$f" "${BACKUP_STAGE}/" 2>/dev/null || true
-done
+if [ -d "${PIFINDER_DATA_ON_ROOT}" ]; then
+    # Copy root-level files (observations.db, configs, etc.)
+    for f in "${PIFINDER_DATA_ON_ROOT}"/*; do
+        [ -f "$f" ] && cp "$f" "${BACKUP_STAGE}/" 2>/dev/null || true
+    done
 
-# Truncate log to last 1000 lines
-if [ -f "${BACKUP_STAGE}/pifinder.log" ]; then
-    tail -n 1000 "${BACKUP_STAGE}/pifinder.log" > "${BACKUP_STAGE}/pifinder.log.tmp"
-    mv "${BACKUP_STAGE}/pifinder.log.tmp" "${BACKUP_STAGE}/pifinder.log"
+    # Truncate log to last 1000 lines
+    if [ -f "${BACKUP_STAGE}/pifinder.log" ]; then
+        tail -n 1000 "${BACKUP_STAGE}/pifinder.log" > "${BACKUP_STAGE}/pifinder.log.tmp"
+        mv "${BACKUP_STAGE}/pifinder.log.tmp" "${BACKUP_STAGE}/pifinder.log"
+    fi
+
+    # Copy obslists directory
+    if [ -d "${PIFINDER_DATA_ON_ROOT}/obslists" ]; then
+        cp -a "${PIFINDER_DATA_ON_ROOT}/obslists" "${BACKUP_STAGE}/obslists"
+    fi
 fi
 
-# Copy obslists directory
-if [ -d "${PIFINDER_DATA_ON_ROOT}/obslists" ]; then
-    cp -a "${PIFINDER_DATA_ON_ROOT}/obslists" "${BACKUP_STAGE}/obslists"
-fi
+show 38 "Backup created"
 
-tar czf "${BACKUP_TMP}" -C /tmp/backup_stage PiFinder_data || fail "Backup creation failed"
-rm -rf /tmp/backup_stage
+# -------------------------------------------------------------------
+# Phase 4: Copy tarball to RAM, unmount old root
+# -------------------------------------------------------------------
 
-BACKUP_SIZE=$(wc -c < "${BACKUP_TMP}")
-show 50 "Backup: ${BACKUP_SIZE} bytes"
+show 40 "Loading tarball to RAM"
 
-show 51 "Copying backup to staging"
-dd if="${BACKUP_TMP}" of="${SD_DEV}" bs=4096 \
-    seek=$(( BACKUP_STAGING_BYTE / 4096 )) conv=notrunc 2>/dev/null || fail "Backup staging failed"
-rm -f "${BACKUP_TMP}"
+TARBALL_ON_ROOT="${MOUNT_ROOT}${TARBALL_PATH}"
+[ ! -f "${TARBALL_ON_ROOT}" ] && { umount "${MOUNT_ROOT}"; fail "Tarball not found: ${TARBALL_PATH}"; }
 
+cp "${TARBALL_ON_ROOT}" /tmp/migration.tar.zst || fail "Failed to copy tarball to RAM"
 umount "${MOUNT_ROOT}"
 
-# Write header with actual backup size
-HEADER_FILE="/tmp/staging_header"
-dd if=/dev/zero of="${HEADER_FILE}" bs=4096 count=1 2>/dev/null
-printf "PFMIGRATE2\ntarball_size=%s\nbackup_size=%s\n" \
-    "${TARBALL_SIZE}" "${BACKUP_SIZE}" | dd of="${HEADER_FILE}" conv=notrunc 2>/dev/null
-dd if="${HEADER_FILE}" of="${SD_DEV}" bs=4096 \
-    seek=$(( STAGING_START_BYTE / 4096 )) conv=notrunc 2>/dev/null
+show 48 "Tarball loaded to RAM"
 
-show 53 "Staging complete"
+# -------------------------------------------------------------------
+# Phase 5: Format partitions
+# -------------------------------------------------------------------
 
-# Verify header
-MAGIC=$(dd if="${SD_DEV}" bs=4096 skip=$(( STAGING_START_BYTE / 4096 )) count=1 2>/dev/null | head -1 || true)
-[ "${MAGIC}" != "PFMIGRATE2" ] && fail "Staging header verification failed"
+show 50 "Formatting boot"
 
-# ===================================================================
-# POINT OF NO RETURN
-# ===================================================================
-
-show 54 "FORMATTING"
-
-# Format boot (FAT32)
 mkfs.vfat -F 32 -n FIRMWARE "${BOOT_DEV}" || fail "mkfs.vfat failed"
 
-show 56 "Format root"
+show 52 "Formatting root"
+
 mkfs.ext4 -F -L NIXOS_SD "${ROOT_DEV}" || fail "mkfs.ext4 failed"
 
 # -------------------------------------------------------------------
-# Phase 5: Extract NixOS from staging area
+# Phase 6: Extract tarball
 # -------------------------------------------------------------------
 
-show 58 "Extracting NixOS"
+show 55 "Extracting NixOS"
 
 mkdir -p "${MOUNT_NEW}"
 mount -t ext4 "${ROOT_DEV}" "${MOUNT_NEW}" || fail "Cannot mount new root"
 
-TARBALL_SKIP_BLOCKS=$(( TARBALL_STAGING_BYTE / 4096 ))
-TARBALL_COUNT_BLOCKS=$(( (TARBALL_SIZE + 4095) / 4096 ))
+mkdir -p /tmp/tarball_extract
+zstd -d < /tmp/migration.tar.zst | tar xf - -C /tmp/tarball_extract || fail "Tarball extraction failed"
+rm -f /tmp/migration.tar.zst
 
-dd if="${SD_DEV}" bs=4096 skip="${TARBALL_SKIP_BLOCKS}" count="${TARBALL_COUNT_BLOCKS}" 2>/dev/null | \
-    zstd -d | tar xf - -C "${MOUNT_NEW}" || fail "Tarball extraction failed"
+show 62 "Copying rootfs"
 
-# Move boot/ contents to boot partition
+cp -a /tmp/tarball_extract/rootfs/. "${MOUNT_NEW}/" || fail "Rootfs copy failed"
+
+show 66 "Copying boot"
+
 mkdir -p "${MOUNT_BOOT}"
-mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount new boot"
+mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount boot"
 
-if [ -d "${MOUNT_NEW}/boot" ]; then
-    cp -a "${MOUNT_NEW}/boot/." "${MOUNT_BOOT}/"
-    rm -rf "${MOUNT_NEW}/boot"
-fi
-
+cp -a /tmp/tarball_extract/boot/. "${MOUNT_BOOT}/" || fail "Boot copy failed"
+rm -rf /tmp/tarball_extract
 
 # -------------------------------------------------------------------
-# Phase 6: Migrate WiFi IMMEDIATELY (before user data)
+# Phase 7: Migrate WiFi
 # -------------------------------------------------------------------
-# Critical: if we crash during user data restore, NixOS will still
-# have network access for recovery.
-#
-# Full PiFinder NixOS uses NetworkManager. We write .nmconnection
-# files directly — NM reads them on boot without nmcli.
 
-show 60 "Migrating WiFi (EARLY)"
+show 70 "Migrating WiFi"
 
 NM_DIR="${MOUNT_NEW}/etc/NetworkManager/system-connections"
 mkdir -p "${NM_DIR}"
 
-# Parse wpa_supplicant.conf and create NetworkManager connection files
 if [ -f /tmp/wifi/wpa_supplicant.conf ]; then
     SSID=""
     PSK=""
@@ -368,104 +272,49 @@ NMEOF
     done < /tmp/wifi/wpa_supplicant.conf
 fi
 
-# Also copy any existing NM connections saved from old root
 if [ -d /tmp/wifi/nm-connections ]; then
     cp -a /tmp/wifi/nm-connections/. "${NM_DIR}/" 2>/dev/null || true
 fi
 
-# Force WiFi configs to disk immediately
 sync
 
-show 61 "WiFi migrated"
-
-# -------------------------------------------------------------------
-# Phase 7: Write resume metadata
-# -------------------------------------------------------------------
-# If we crash during user data restore, a recovery service can read
-# this metadata and resume the restore from the staging area.
-
-show 62 "Writing resume metadata"
-
-STAGING_STATE_DIR="${MOUNT_NEW}${MIGRATION_STATE_DIR}"
-mkdir -p "${STAGING_STATE_DIR}"
-
-# Calculate offsets for recovery to use
-STAGING_OFFSET_BLOCKS=$(( STAGING_START_BYTE / 4096 ))
-BACKUP_OFFSET_BLOCKS=$(( BACKUP_STAGING_BYTE / 4096 ))
-
-cat > "${STAGING_STATE_DIR}/staging-meta" <<EOF
-SD_DEV=${SD_DEV}
-STAGING_OFFSET_BLOCKS=${STAGING_OFFSET_BLOCKS}
-BACKUP_OFFSET_BLOCKS=${BACKUP_OFFSET_BLOCKS}
-BACKUP_SIZE=${BACKUP_SIZE}
-EOF
-
-cat > "${STAGING_STATE_DIR}/state" <<EOF
-PHASE=2
-PERCENT=62
-STATUS=Restoring user data
-EOF
-
-sync
+show 74 "WiFi migrated"
 
 # -------------------------------------------------------------------
 # Phase 8: Restore user data
 # -------------------------------------------------------------------
 
-show 63 "Restoring user data"
+show 76 "Restoring user data"
 
 mkdir -p "${MOUNT_NEW}/home/pifinder"
 
-BACKUP_SKIP_BLOCKS=$(( BACKUP_STAGING_BYTE / 4096 ))
-BACKUP_COUNT_BLOCKS=$(( (BACKUP_SIZE + 4095) / 4096 ))
-
-dd if="${SD_DEV}" bs=4096 skip="${BACKUP_SKIP_BLOCKS}" count="${BACKUP_COUNT_BLOCKS}" 2>/dev/null | \
-    gunzip | tar xf - -C "${MOUNT_NEW}/home/pifinder/" || fail "User data restore failed"
-
-# Mark restore complete (so recovery doesn't try to resume)
-touch "${STAGING_STATE_DIR}/restore-complete"
-
-show 66 "User data restored"
-
-# -------------------------------------------------------------------
-# Phase 9: Finalize
-# -------------------------------------------------------------------
-
-show 67 "Setting permissions"
+if [ -d /tmp/backup_stage/PiFinder_data ]; then
+    cp -a /tmp/backup_stage/PiFinder_data "${MOUNT_NEW}/home/pifinder/"
+fi
 
 # pifinder user: UID 1000, GID 100 (users) on NixOS
 chown -R 1000:100 "${MOUNT_NEW}/home/pifinder" 2>/dev/null || true
 
-# Update state
-cat > "${STAGING_STATE_DIR}/state" <<EOF
-PHASE=2
-PERCENT=70
-STATUS=Expanding partition
-EOF
+show 80 "User data restored"
 
-umount "${MOUNT_NEW}"
-
-show 70 "Expanding partition"
-
-# Expand partition to fill card
-echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
-partprobe "${SD_DEV}" 2>/dev/null || blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
-sleep 1
-
-# Expand filesystem
-resize2fs "${ROOT_DEV}" 2>/dev/null || true
-
-show 80 "Cleaning up boot"
-
-# Remove any migration artifacts that may have survived formatting
-rm -f "${MOUNT_BOOT}/nixos_migration"
-rm -f "${MOUNT_BOOT}/initramfs-migration.gz"
-rm -f "${MOUNT_BOOT}/config.txt.premigration"
-
-show 90 "Syncing"
-sync
+# -------------------------------------------------------------------
+# Phase 9: Expand partition and finalize
+# -------------------------------------------------------------------
 
 umount "${MOUNT_BOOT}" 2>/dev/null || true
+umount "${MOUNT_NEW}" 2>/dev/null || true
+
+show 82 "Expanding partition"
+
+echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
+blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
+sleep 1
+
+e2fsck -f -y "${ROOT_DEV}" 2>/dev/null || true
+resize2fs "${ROOT_DEV}" 2>/dev/null || true
+
+show 92 "Syncing"
+sync
 
 show 100 "Complete"
 sleep 3

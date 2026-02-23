@@ -1,15 +1,14 @@
 #!/bin/bash
-# nixos_migration.sh - Pre-migration: validate, download, backup, stage initramfs
+# nixos_migration.sh - Pre-migration: validate, download, stage initramfs
 #
 # Called by PiFinder app (sys_utils.start_nixos_migration).
 # Runs on RPi OS before rebooting into initramfs for the actual migration.
 #
 # The initramfs will:
-#   1. Shrink root FS + partition to free space at end of 32GB SD
-#   2. Copy tarball + backup from root to the freed staging area
-#   3. Format both partitions
-#   4. Extract NixOS from staging area
-#   5. Restore user data and WiFi credentials
+#   1. Save WiFi + user backup to RAM
+#   2. DD the .img.zst to the SD card
+#   3. Expand partition, restore WiFi + user data
+#   4. Reboot into NixOS
 #
 # Usage: nixos_migration.sh <migration_url> [sha256] [progress_file]
 #
@@ -18,7 +17,6 @@
 #   1 - Pre-flight check failure
 #   2 - Download failure
 #   3 - Checksum mismatch
-#   4 - Backup failure
 #   5 - Initramfs staging failure
 
 set -euo pipefail
@@ -38,14 +36,10 @@ _trap_err() {
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PIFINDER_HOME="/home/pifinder"
 TARBALL="${PIFINDER_HOME}/pifinder-nixos-migration.tar.zst"
-BACKUP_TAR="${PIFINDER_HOME}/pifinder_backup.tar.gz"
 BOOT_PARTITION="/boot"
 INITRAMFS_DIR="/tmp/nixos_initramfs"
 PROGRESS_BIN="${SCRIPT_DIR}/migration_progress"
 INIT_SCRIPT="${SCRIPT_DIR}/nixos_migration_init.sh"
-
-# 8GB staging area at end of SD card (holds ~900MB tarball + full backup with images)
-STAGING_SIZE_MB=8192
 
 progress() {
     local pct="$1"
@@ -97,9 +91,14 @@ if [ "${WIFI_MODE}" != "Client" ]; then
     fail 1 "WiFi must be in Client mode"
 fi
 
+# RAM check: image must fit in available RAM during initramfs
+MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+MEM_MB=$((MEM_KB / 1024))
+[ "${MEM_MB}" -lt 1800 ] && fail 1 "Insufficient RAM: ${MEM_MB}MB (need 2GB)"
+
 progress 5 "Pre-flight OK"
 
-# --- Phase 2: Download tarball ---
+# --- Phase 2: Download image ---
 SKIP_DOWNLOAD=false
 if [ -f "${TARBALL}" ]; then
     if [ -z "${MIGRATION_SHA256}" ]; then
@@ -146,22 +145,12 @@ fi
 
 progress 65 "Download OK"
 
-# --- Phase 4: Calculate sizes (backup created in initramfs to save space) ---
-progress 68 "Calculating sizes"
+# --- Phase 4: Get image size ---
+progress 68 "Preparing"
 
 TARBALL_SIZE=$(stat -c%s "${TARBALL}")
 
-# Estimate backup size: PiFinder_data compressed ~50% typically
-# Initramfs will stream backup directly to staging, so we just need estimate for header
-PIFINDER_DATA="${PIFINDER_HOME}/PiFinder_data"
-if [ -d "${PIFINDER_DATA}" ]; then
-    DATA_SIZE=$(du -sb "${PIFINDER_DATA}" 2>/dev/null | cut -f1)
-    BACKUP_SIZE_EST=$(( DATA_SIZE / 2 ))  # conservative compression estimate
-else
-    BACKUP_SIZE_EST=0
-fi
-
-progress 75 "Sizes calculated"
+progress 75 "Tarball: $((TARBALL_SIZE / 1048576))MB"
 
 # --- Phase 5: Build initramfs ---
 progress 78 "Building initramfs"
@@ -169,14 +158,14 @@ progress 78 "Building initramfs"
 rm -rf "${INITRAMFS_DIR}"
 mkdir -p "${INITRAMFS_DIR}"/{bin,lib,dev,proc,sys,mnt,tmp}
 
-# Busybox (provides sh, mount, umount, dd, tar, awk, sed, gunzip for backup, etc.)
+# Busybox (provides sh, mount, umount, dd, tar, cp, etc.)
 if command -v busybox >/dev/null 2>&1; then
     copy_with_libs "$(command -v busybox)" "${INITRAMFS_DIR}"
 else
     fail 5 "busybox not found"
 fi
 
-# Filesystem tools (required for shrink + reformat)
+# Filesystem tools
 for tool in e2fsck resize2fs mke2fs mkfs.vfat sfdisk zstd; do
     tool_path=$(command -v "${tool}" 2>/dev/null || true)
     if [ -z "${tool_path}" ]; then
@@ -203,13 +192,10 @@ cp "${INIT_SCRIPT}" "${INITRAMFS_DIR}/init"
 chmod +x "${INITRAMFS_DIR}/init"
 
 # Metadata: paths + sizes so init script knows where to find things
-# Note: backup is created by initramfs directly to staging (saves space on full disks)
 cat > "${INITRAMFS_DIR}/migration_meta" <<METAEOF
 TARBALL_PATH=${TARBALL}
-PIFINDER_DATA_PATH=${PIFINDER_HOME}/PiFinder_data
 TARBALL_SIZE=${TARBALL_SIZE}
-BACKUP_SIZE_EST=${BACKUP_SIZE_EST}
-STAGING_SIZE_MB=${STAGING_SIZE_MB}
+PIFINDER_DATA_PATH=${PIFINDER_HOME}/PiFinder_data
 METAEOF
 
 progress 85 "Staging initramfs"
@@ -229,14 +215,13 @@ progress 92 "Configuring boot"
 if [ -f "${BOOT_PARTITION}/config.txt" ]; then
     sudo cp "${BOOT_PARTITION}/config.txt" "${BOOT_PARTITION}/config.txt.premigration"
 
-    # Add initramfs directive to config.txt for next boot
     echo "initramfs initramfs-migration.gz followkernel" | \
         sudo tee -a "${BOOT_PARTITION}/config.txt" > /dev/null
 fi
 
 progress 100 "Rebooting in 5s..."
 
-echo "Migration staged. Tarball: ${TARBALL_SIZE} bytes, Backup: ${BACKUP_SIZE_EST} bytes"
+echo "Migration staged. Tarball: ${TARBALL_SIZE} bytes"
 echo "Rebooting in 5 seconds..."
 sleep 5
 sudo reboot
