@@ -175,21 +175,28 @@ show 55 "Extracting NixOS"
 mkdir -p "${MOUNT_NEW}"
 mount -t ext4 "${ROOT_DEV}" "${MOUNT_NEW}" || fail "Cannot mount new root"
 
-mkdir -p /tmp/tarball_extract
-zstd -d < /tmp/migration.tar.zst | tar xf - -C /tmp/tarball_extract || fail "Tarball extraction failed"
+# Extract tarball directly to SD card (ext4 has plenty of space, tmpfs does not)
+zstd -d < /tmp/migration.tar.zst | tar xf - -C "${MOUNT_NEW}" || fail "Tarball extraction failed"
 rm -f /tmp/migration.tar.zst
 
-show 62 "Copying rootfs"
+show 60 "Moving rootfs"
 
-cp -a /tmp/tarball_extract/rootfs/. "${MOUNT_NEW}/" || fail "Rootfs copy failed"
+# Move rootfs/ contents up to partition root (same-fs rename, fast)
+cd "${MOUNT_NEW}/rootfs"
+for item in * .[!.]* ..?*; do
+    [ -e "$item" ] || continue
+    mv "$item" "${MOUNT_NEW}/"
+done
+cd /
+rmdir "${MOUNT_NEW}/rootfs"
 
 show 66 "Copying boot"
 
 mkdir -p "${MOUNT_BOOT}"
 mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount boot"
 
-cp -a /tmp/tarball_extract/boot/. "${MOUNT_BOOT}/" || fail "Boot copy failed"
-rm -rf /tmp/tarball_extract
+cp -a "${MOUNT_NEW}/boot/." "${MOUNT_BOOT}/" || fail "Boot copy failed"
+rm -rf "${MOUNT_NEW}/boot"
 
 # -------------------------------------------------------------------
 # Phase 7: Migrate WiFi
