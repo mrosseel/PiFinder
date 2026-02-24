@@ -24,15 +24,6 @@ export LD_LIBRARY_PATH=/lib:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-lin
 BOOT_DEV="/dev/mmcblk0p1"
 ROOT_DEV="/dev/mmcblk0p2"
 SD_DEV="/dev/mmcblk0"
-
-# Wait for SD card device to appear
-n=0
-while [ ! -b "${BOOT_DEV}" ] && [ "${n}" -lt 30 ]; do
-    sleep 1
-    n=$((n + 1))
-done
-[ ! -b "${BOOT_DEV}" ] && fail "SD card not found after 30s: ${BOOT_DEV}"
-
 MOUNT_ROOT="/mnt/root"
 MOUNT_NEW="/mnt/new"
 MOUNT_BOOT="/mnt/boot"
@@ -56,6 +47,16 @@ fail() {
     echo "Dropping to shell for debugging..."
     exec /bin/sh
 }
+
+show 28 "Migrating..."
+
+# Wait for SD card device to appear
+n=0
+while [ ! -b "${BOOT_DEV}" ] && [ "${n}" -lt 30 ]; do
+    sleep 1
+    n=$((n + 1))
+done
+[ ! -b "${BOOT_DEV}" ] && fail "SD card not found after 30s: ${BOOT_DEV}"
 
 show 30 "Initramfs started"
 
