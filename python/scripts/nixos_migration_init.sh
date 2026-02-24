@@ -196,7 +196,7 @@ show 66 "Copying boot"
 mkdir -p "${MOUNT_BOOT}"
 mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount boot"
 
-cp -a "${MOUNT_NEW}/boot/." "${MOUNT_BOOT}/" || fail "Boot copy failed"
+cp -r "${MOUNT_NEW}/boot/." "${MOUNT_BOOT}/" || fail "Boot copy failed"
 rm -rf "${MOUNT_NEW}/boot"
 
 # -------------------------------------------------------------------
