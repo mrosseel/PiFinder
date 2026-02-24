@@ -27,8 +27,8 @@ _MIGRATION_VERSION_INFO = {
     "version": "2.5.0",
     "type": "upgrade",
     "migration_url": "https://github.com/mrosseel/PiFinder/releases/download/v2.5.0-migration/pifinder-nixos-v2.5.0.tar.zst",
-    "migration_size_mb": 1127,
-    "migration_sha256": "dd9aca3b6d0a8dcf95b45f477225028f3a1998d5148383f3834e8bff12807803",
+    "migration_size_mb": 1048,
+    "migration_sha256": "fe2cba4c6dfb114710a07edfd4eb19886fb1804117d26e33f5784160a17b90d4",
 }
 
 
