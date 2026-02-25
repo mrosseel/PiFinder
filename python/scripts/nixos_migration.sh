@@ -180,6 +180,16 @@ ln -sf mke2fs "${INITRAMFS_DIR}/bin/mkfs.ext4" 2>/dev/null || true
 # OLED progress display (static binary, no libs needed)
 cp "${PROGRESS_BIN}" "${INITRAMFS_DIR}/bin/" 2>/dev/null || true
 
+# SPI kernel modules — needed for OLED progress display
+KVER=$(uname -r)
+KMOD_DIR="/lib/modules/${KVER}/kernel/drivers/spi"
+if [ -d "${KMOD_DIR}" ]; then
+    mkdir -p "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi"
+    cp "${KMOD_DIR}/spi-bcm2835.ko"* "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi/" 2>/dev/null || true
+    cp "${KMOD_DIR}/spidev.ko"* "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi/" 2>/dev/null || true
+    depmod -b "${INITRAMFS_DIR}" "${KVER}" 2>/dev/null || true
+fi
+
 # Dynamic linker — needed for non-busybox tools
 LD_PATH=$(find /lib /lib64 /usr/lib -name "ld-linux-*" -type f 2>/dev/null | head -1 || true)
 if [ -n "${LD_PATH}" ]; then

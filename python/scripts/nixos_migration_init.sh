@@ -18,6 +18,14 @@ mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
+# Load SPI modules for OLED progress display
+KVER=$(uname -r)
+if [ -d "/lib/modules/${KVER}" ]; then
+    insmod "/lib/modules/${KVER}/kernel/drivers/spi/spi-bcm2835.ko" 2>/dev/null || true
+    insmod "/lib/modules/${KVER}/kernel/drivers/spi/spidev.ko" 2>/dev/null || true
+    sleep 0.5
+fi
+
 # Shared lib path for dynamically linked tools (e2fsck, mkfs, etc.)
 export LD_LIBRARY_PATH=/lib:/usr/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu
 
