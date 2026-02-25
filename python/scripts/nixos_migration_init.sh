@@ -204,7 +204,8 @@ show 66 "Copying boot"
 mkdir -p "${MOUNT_BOOT}"
 mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount boot"
 
-cp -r "${MOUNT_NEW}/boot/." "${MOUNT_BOOT}/" || fail "Boot copy failed"
+# Use tar pipe — busybox cp doesn't reliably handle /. for copying dir contents
+(cd "${MOUNT_NEW}/boot" && tar cf - .) | (cd "${MOUNT_BOOT}" && tar xf -) || fail "Boot copy failed"
 rm -rf "${MOUNT_NEW}/boot"
 
 # -------------------------------------------------------------------
