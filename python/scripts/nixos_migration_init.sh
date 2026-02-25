@@ -44,13 +44,7 @@ show() {
     local msg="$2"
     STAGE_NUM=$((STAGE_NUM + 1))
     echo "[${pct}%] ${msg}"
-    if [ -x "${PROGRESS}" ]; then
-        if [ "${STAGE_NUM}" -eq 1 ]; then
-            "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
-        else
-            "${PROGRESS}" --update "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
-        fi
-    fi
+    [ -x "${PROGRESS}" ] && "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
 }
 
 fail() {
@@ -169,8 +163,16 @@ umount "${MOUNT_ROOT}"
 show 48 "Tarball loaded to RAM"
 
 # -------------------------------------------------------------------
-# Phase 5: Format partitions
+# Phase 5: Expand + format partitions
 # -------------------------------------------------------------------
+
+show 49 "Expanding partition"
+
+# Expand partition 2 BEFORE formatting — sfdisk rewrites the MBR and
+# blockdev --rereadpt can corrupt a written FAT partition if done after.
+echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
+blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
+sleep 1
 
 show 50 "Formatting boot"
 
@@ -344,11 +346,7 @@ show 80 "User data restored"
 umount "${MOUNT_BOOT}" 2>/dev/null || true
 umount "${MOUNT_NEW}" 2>/dev/null || true
 
-show 82 "Expanding partition"
-
-echo ", +" | sfdisk -N 2 "${SD_DEV}" --no-reread 2>/dev/null || true
-blockdev --rereadpt "${SD_DEV}" 2>/dev/null || true
-sleep 1
+show 82 "Resizing filesystem"
 
 e2fsck -f -y "${ROOT_DEV}" 2>/dev/null || true
 resize2fs "${ROOT_DEV}" 2>/dev/null || true
