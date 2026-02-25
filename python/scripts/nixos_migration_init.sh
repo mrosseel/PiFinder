@@ -37,12 +37,13 @@ MOUNT_BOOT="/mnt/boot"
 PROGRESS="/bin/migration_progress"
 
 STAGE_NUM=0
-STAGE_TOTAL=18
+STAGE_TOTAL=22
 
 show() {
     local pct="$1"
     local msg="$2"
     STAGE_NUM=$((STAGE_NUM + 1))
+    echo "[${pct}%] ${msg}" > /dev/console 2>/dev/null || true
     echo "[${pct}%] ${msg}"
     [ -x "${PROGRESS}" ] && "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
 }
@@ -231,7 +232,8 @@ if [ ! -f "${MOUNT_BOOT}/extlinux/extlinux.conf" ]; then
     fail "extlinux.conf missing from boot partition after copy"
 fi
 
-rm -rf "${MOUNT_NEW}/boot"
+# Keep boot/ on ext4 — U-Boot reads extlinux.conf from mmc 0:2 (ext4 root)
+# FAT partition only needs RPi firmware files (config.txt, u-boot, DTBs)
 
 # -------------------------------------------------------------------
 # Phase 7: Migrate WiFi
@@ -354,8 +356,19 @@ resize2fs "${ROOT_DEV}" 2>/dev/null || true
 show 92 "Syncing"
 sync
 
+# Final verification: remount boot partition and confirm extlinux.conf survived
+show 95 "Verifying boot"
+mkdir -p /mnt/bootchk
+mount -t vfat -o ro "${BOOT_DEV}" /mnt/bootchk || fail "Cannot remount boot for verification"
+if [ ! -f /mnt/bootchk/extlinux/extlinux.conf ]; then
+    ls -lR /mnt/bootchk > /dev/console 2>&1 || true
+    umount /mnt/bootchk 2>/dev/null || true
+    fail "extlinux.conf missing from boot partition before reboot"
+fi
+umount /mnt/bootchk
+
 show 100 "Complete"
 sleep 3
 
-echo "Rebooting into NixOS..."
+echo "Rebooting into NixOS..." > /dev/console 2>/dev/null || true
 reboot -f
