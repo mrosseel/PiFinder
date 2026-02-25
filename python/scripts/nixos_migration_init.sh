@@ -19,10 +19,9 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 # Load SPI modules for OLED progress display
-KVER=$(uname -r)
-if [ -d "/lib/modules/${KVER}" ]; then
-    insmod "/lib/modules/${KVER}/kernel/drivers/spi/spi-bcm2835.ko" 2>/dev/null || true
-    insmod "/lib/modules/${KVER}/kernel/drivers/spi/spidev.ko" 2>/dev/null || true
+if [ -f /lib/modules/spi-bcm2835.ko ]; then
+    insmod /lib/modules/spi-bcm2835.ko 2>/dev/null || true
+    insmod /lib/modules/spidev.ko 2>/dev/null || true
     sleep 0.5
 fi
 

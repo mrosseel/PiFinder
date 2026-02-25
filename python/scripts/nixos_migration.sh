@@ -181,13 +181,23 @@ ln -sf mke2fs "${INITRAMFS_DIR}/bin/mkfs.ext4" 2>/dev/null || true
 cp "${PROGRESS_BIN}" "${INITRAMFS_DIR}/bin/" 2>/dev/null || true
 
 # SPI kernel modules — needed for OLED progress display
+# Modules may be compressed (.ko.xz); decompress for insmod in initramfs
 KVER=$(uname -r)
 KMOD_DIR="/lib/modules/${KVER}/kernel/drivers/spi"
 if [ -d "${KMOD_DIR}" ]; then
-    mkdir -p "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi"
-    cp "${KMOD_DIR}/spi-bcm2835.ko"* "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi/" 2>/dev/null || true
-    cp "${KMOD_DIR}/spidev.ko"* "${INITRAMFS_DIR}/lib/modules/${KVER}/kernel/drivers/spi/" 2>/dev/null || true
-    depmod -b "${INITRAMFS_DIR}" "${KVER}" 2>/dev/null || true
+    INITRAMFS_SPI="${INITRAMFS_DIR}/lib/modules"
+    mkdir -p "${INITRAMFS_SPI}"
+    for mod in spi-bcm2835 spidev; do
+        if [ -f "${KMOD_DIR}/${mod}.ko.xz" ]; then
+            xz -dc "${KMOD_DIR}/${mod}.ko.xz" > "${INITRAMFS_SPI}/${mod}.ko"
+        elif [ -f "${KMOD_DIR}/${mod}.ko.gz" ]; then
+            gzip -dc "${KMOD_DIR}/${mod}.ko.gz" > "${INITRAMFS_SPI}/${mod}.ko"
+        elif [ -f "${KMOD_DIR}/${mod}.ko.zst" ]; then
+            zstd -dc "${KMOD_DIR}/${mod}.ko.zst" > "${INITRAMFS_SPI}/${mod}.ko"
+        elif [ -f "${KMOD_DIR}/${mod}.ko" ]; then
+            cp "${KMOD_DIR}/${mod}.ko" "${INITRAMFS_SPI}/${mod}.ko"
+        fi
+    done
 fi
 
 # Dynamic linker — needed for non-busybox tools
