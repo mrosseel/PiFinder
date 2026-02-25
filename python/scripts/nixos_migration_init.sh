@@ -44,7 +44,13 @@ show() {
     local msg="$2"
     STAGE_NUM=$((STAGE_NUM + 1))
     echo "[${pct}%] ${msg}"
-    [ -x "${PROGRESS}" ] && "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
+    if [ -x "${PROGRESS}" ]; then
+        if [ "${STAGE_NUM}" -eq 1 ]; then
+            "${PROGRESS}" "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
+        else
+            "${PROGRESS}" --update "${pct}" "${STAGE_NUM}" "${STAGE_TOTAL}" "${msg}" 2>/dev/null || true
+        fi
+    fi
 }
 
 fail() {
@@ -203,8 +209,26 @@ show 66 "Copying boot"
 mkdir -p "${MOUNT_BOOT}"
 mount -t vfat "${BOOT_DEV}" "${MOUNT_BOOT}" || fail "Cannot mount boot"
 
-# Use tar pipe — busybox cp doesn't reliably handle /. for copying dir contents
-(cd "${MOUNT_NEW}/boot" && tar cf - .) | (cd "${MOUNT_BOOT}" && tar xf -) || fail "Boot copy failed"
+# Copy boot files to FAT partition
+cd "${MOUNT_NEW}/boot"
+for item in *; do
+    [ -e "$item" ] || continue
+    if [ -d "$item" ]; then
+        cp -r "$item" "${MOUNT_BOOT}/$item"
+    else
+        cp "$item" "${MOUNT_BOOT}/$item"
+    fi
+done
+cd /
+sync
+
+# Verify critical boot files landed
+if [ ! -f "${MOUNT_BOOT}/extlinux/extlinux.conf" ]; then
+    echo "Boot partition contents:" >&2
+    ls -lR "${MOUNT_BOOT}" >&2
+    fail "extlinux.conf missing from boot partition after copy"
+fi
+
 rm -rf "${MOUNT_NEW}/boot"
 
 # -------------------------------------------------------------------
