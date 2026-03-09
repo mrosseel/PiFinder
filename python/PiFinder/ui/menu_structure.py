@@ -26,6 +26,7 @@ s = _("Language: de")  # this way ruff lint and mypy type_hints warnings are sil
 s = _("Language: en")
 s = _("Language: es")
 s = _("Language: fr")
+s = _("Language: zh")
 s = s
 del s
 
@@ -141,6 +142,12 @@ pifinder_menu = {
                                     "class": UIObjectList,
                                     "objects": "catalog",
                                     "value": "EGC",
+                                },
+                                {
+                                    "name": _("Harris Globs"),
+                                    "class": UIObjectList,
+                                    "objects": "catalog",
+                                    "value": "Har",
                                 },
                                 {
                                     "name": _("Herschel 400"),
@@ -314,6 +321,10 @@ pifinder_menu = {
                                 {
                                     "name": _("E.G. Globs"),
                                     "value": "EGC",
+                                },
+                                {
+                                    "name": _("Harris Globs"),
+                                    "value": "Har",
                                 },
                                 {
                                     "name": _("Herschel 400"),
@@ -680,6 +691,22 @@ pifinder_menu = {
                             ],
                         },
                         {
+                            "name": _("T9 Search"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "t9_search",
+                            "items": [
+                                {
+                                    "name": _("Off"),
+                                    "value": False,
+                                },
+                                {
+                                    "name": _("On"),
+                                    "value": True,
+                                },
+                            ],
+                        },
+                        {
                             "name": _("Az Arrows"),
                             "class": UITextMenu,
                             "select": "single",
@@ -718,6 +745,10 @@ pifinder_menu = {
                                 {
                                     "name": _("Spanish"),
                                     "value": "es",
+                                },
+                                {
+                                    "name": _("Chinese"),
+                                    "value": "zh",
                                 },
                             ],
                         },
@@ -1071,42 +1102,22 @@ pifinder_menu = {
                 {"name": _("Software Upd"), "class": UISoftware},
                 {"name": _("Test Mode"), "callback": callbacks.activate_debug},
                 {
-                    "name": _("Power"),
-                    "class": UITextMenu,
-                    "select": "Single",
-                    "label": "power",
-                    "items": [
-                        {
-                            "name": _("Shutdown"),
-                            "class": UITextMenu,
-                            "select": "Single",
-                            "label": "shutdown",
-                            "items": [
-                                {"name": "Confirm", "callback": callbacks.shutdown},
-                                {"name": "Cancel", "callback": callbacks.go_back},
-                            ],
-                        },
-                        {
-                            "name": _("Restart"),
-                            "class": UITextMenu,
-                            "select": "Single",
-                            "label": "restart",
-                            "items": [
-                                {
-                                    "name": _("Confirm"),
-                                    "callback": callbacks.restart_system,
-                                },
-                                {"name": _("Cancel"), "callback": callbacks.go_back},
-                            ],
-                        },
-                    ],
-                },
-                {
                     "name": _("Experimental"),
                     "class": UITextMenu,
                     "select": "Single",
                     "items": [
                         {"name": "SQM", "class": UISQM},
+                        {
+                            "name": _("Integrator"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "imu_integrator",
+                            "post_callback": callbacks.restart_pifinder,
+                            "items": [
+                                {"name": _("Classic"), "value": "classic"},
+                                {"name": _("Quaternion"), "value": "quaternion"},
+                            ],
+                        },
                         {
                             "name": _("AE Algo"),
                             "class": UITextMenu,
@@ -1133,15 +1144,33 @@ pifinder_menu = {
                                 },
                             ],
                         },
+                    ],
+                },
+                {
+                    "name": _("Power"),
+                    "class": UITextMenu,
+                    "select": "Single",
+                    "label": "power",
+                    "items": [
                         {
-                            "name": _("Capture Exp Sweep"),
+                            "name": _("Shutdown"),
                             "class": UITextMenu,
-                            "select": "single",
-                            "label": "capture_exp_sweep",
+                            "select": "Single",
+                            "label": "shutdown",
+                            "items": [
+                                {"name": "Confirm", "callback": callbacks.shutdown},
+                                {"name": "Cancel", "callback": callbacks.go_back},
+                            ],
+                        },
+                        {
+                            "name": _("Restart"),
+                            "class": UITextMenu,
+                            "select": "Single",
+                            "label": "restart",
                             "items": [
                                 {
                                     "name": _("Confirm"),
-                                    "callback": callbacks.capture_exposure_sweep,
+                                    "callback": callbacks.restart_system,
                                 },
                                 {"name": _("Cancel"), "callback": callbacks.go_back},
                             ],
