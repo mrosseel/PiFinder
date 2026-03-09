@@ -10,7 +10,7 @@ home_dir = Path.home()
 cwd_dir = Path.cwd()
 pifinder_dir = Path("..")
 astro_data_dir = cwd_dir / pifinder_dir / "astro_data"
-tetra3_dir = pifinder_dir / "python/PiFinder/tetra3"
+tetra3_dir = pifinder_dir / "python/PiFinder/tetra3/tetra3"
 data_dir = Path(Path.home(), "PiFinder_data")
 pifinder_db = astro_data_dir / "pifinder_objects.db"
 observations_db = data_dir / "observations.db"
@@ -39,17 +39,31 @@ def serialize_solution(solution: dict) -> str:
 
         if "numpy.float" in str(type(v)):
             v = float(v)
+
+        if "quaternion" in str(type(v)):
+            v = v.components.tolist()
+
         out_dict[k] = v
 
     return json.dumps(out_dict)
 
 
 def get_sys_utils():
-    try:
-        # Attempt to import the real sys_utils
-        sys_utils = importlib.import_module("PiFinder.sys_utils")
-    except ImportError:
+    # Check if we should use fake sys_utils for local development
+    use_fake = os.environ.get("PIFINDER_USE_FAKE_SYS_UTILS", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    if use_fake:
         sys_utils = importlib.import_module("PiFinder.sys_utils_fake")
+    else:
+        try:
+            # Attempt to import the real sys_utils
+            sys_utils = importlib.import_module("PiFinder.sys_utils")
+        except ImportError:
+            sys_utils = importlib.import_module("PiFinder.sys_utils_fake")
     return sys_utils
 
 

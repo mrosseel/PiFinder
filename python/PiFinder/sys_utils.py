@@ -3,7 +3,8 @@ import re
 from typing import Dict, Any
 
 import sh
-from sh import wpa_cli, unzip, su, passwd
+from sh import wpa_cli, unzip, passwd
+import pam
 
 import socket
 from PiFinder import utils
@@ -274,15 +275,11 @@ def shutdown() -> None:
 def update_software():
     """
     Uses systemctl to git pull and then restart
-    service.  Returns True on success, False on failure.
+    service
     """
     logger.info("SYS: Running update")
-    try:
-        sh.bash("/home/pifinder/PiFinder/pifinder_update.sh")
-        return True
-    except sh.ErrorReturnCode as e:
-        logger.error(f"SYS: Update failed with exit code {e.exit_code}: {e.stderr}")
-        return False
+    sh.bash("/home/pifinder/PiFinder/pifinder_update.sh")
+    return True
 
 
 def verify_password(username, password):
@@ -290,11 +287,9 @@ def verify_password(username, password):
     Checks the provided password against the provided user
     password
     """
-    result = su(username, "-c", "echo", _in=f"{password}\n", _ok_code=(0, 1))
-    if result.exit_code == 0:
-        return True
-    else:
-        return False
+    p = pam.pam()
+
+    return p.authenticate(username, password)
 
 
 def change_password(username, current_password, new_password):
@@ -415,6 +410,10 @@ def update_gpsd_config(baud_rate: int) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# NixOS migration
+# ---------------------------------------------------------------------------
+
 MIGRATION_PROGRESS_FILE = "/tmp/nixos_migration_progress"
 MIGRATION_SCRIPT = "/home/pifinder/PiFinder/python/scripts/nixos_migration.sh"
 
@@ -422,12 +421,6 @@ MIGRATION_SCRIPT = "/home/pifinder/PiFinder/python/scripts/nixos_migration.sh"
 def start_nixos_migration(version_info: dict) -> None:
     """
     Start the NixOS migration process in the background.
-
-    Runs nixos_migration.sh which handles download, backup,
-    initramfs staging, and prepares for reboot.
-
-    Args:
-        version_info: Dict with migration_url, migration_sha256, etc.
     """
     url = version_info.get("migration_url", "")
     sha256 = version_info.get("migration_sha256", "")
@@ -437,6 +430,7 @@ def start_nixos_migration(version_info: dict) -> None:
     logger.info(f"SYS: Starting NixOS migration to {version_info.get('version', '?')}")
 
     import json
+
     with open(MIGRATION_PROGRESS_FILE, "w") as f:
         json.dump({"percent": 0, "status": "Starting..."}, f)
 
@@ -470,11 +464,9 @@ def start_nixos_migration(version_info: dict) -> None:
 def get_migration_progress() -> Dict[str, Any]:
     """
     Read current migration progress from the progress file.
-
-    Returns:
-        Dict with 'percent' (int) and 'status' (str), or empty dict.
     """
     import json
+
     try:
         with open(MIGRATION_PROGRESS_FILE, "r") as f:
             return json.load(f)
