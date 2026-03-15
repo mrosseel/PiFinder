@@ -5,10 +5,17 @@ POSS image provider - loads pre-downloaded survey images from disk
 """
 
 import os
-from PIL import Image
+from PIL import Image, ImageDraw
 from PiFinder import utils
 from PiFinder import image_util
 from .image_base import ImageProvider, ImageType
+from .image_utils import (
+    apply_circular_vignette,
+    pad_to_display_resolution,
+    add_image_overlays,
+    draw_nsew_labels,
+    draw_size_overlay,
+)
 import logging
 
 logger = logging.getLogger("PiFinder.POSSProvider")
@@ -54,12 +61,6 @@ class POSSImageProvider(ImageProvider):
         Returns:
             PIL.Image with POSS image processed and overlayed
         """
-        from .image_utils import (
-            apply_circular_vignette,
-            pad_to_display_resolution,
-            add_image_overlays,
-        )
-
         # Load image from disk
         image_path = self._resolve_image_name(catalog_object, source="POSS")
         return_image = Image.open(image_path)
@@ -114,6 +115,34 @@ class POSSImageProvider(ImageProvider):
         # Add circular vignette if burn_in
         if burn_in:
             return_image = apply_circular_vignette(return_image, display_class)
+
+            # Draw NSEW labels and size overlay on top of vignette
+            ri_draw = ImageDraw.Draw(return_image)
+            cx = display_class.fov_res / 2
+            cy = display_class.fov_res / 2
+            flip = telescope.flip_image if telescope else False
+            flop = telescope.flop_image if telescope else False
+            fx = -1 if flip else 1
+            fy = -1 if flop else 1
+
+            show_nsew = kwargs.get("show_nsew", True)
+            show_bbox = kwargs.get("show_bbox", True)
+
+            if show_nsew:
+                draw_nsew_labels(ri_draw, display_class, image_rotate, cx, cy, fx, fy)
+
+            if show_bbox and hasattr(catalog_object, "size") and catalog_object.size:
+                draw_size_overlay(
+                    ri_draw,
+                    catalog_object,
+                    display_class,
+                    fov,
+                    image_rotate,
+                    cx,
+                    cy,
+                    fx,
+                    fy,
+                )
 
         # Pad to display resolution if needed
         return_image = pad_to_display_resolution(return_image, display_class)

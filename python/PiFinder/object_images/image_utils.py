@@ -8,7 +8,195 @@ Provides common operations for:
 - Generated Gaia star charts
 """
 
+import math
+
 from PIL import Image, ImageDraw, ImageChops
+
+
+def cardinal_vectors(image_rotate, fx=1, fy=1):
+    """Return (nx, ny), (ex, ey) unit vectors for North and East.
+
+    image_rotate: degrees the image was rotated (180 + roll for reflectors).
+    fx, fy: -1 to mirror that axis (flip/flop), +1 otherwise.
+    """
+    theta = math.radians(image_rotate)
+    n = (fx * math.sin(theta), fy * -math.cos(theta))
+    e = (-fx * math.cos(theta), -fy * math.sin(theta))
+    return n, e
+
+
+def size_overlay_points(extents, pa, image_rotate, px_per_arcsec, cx, cy, fx=1, fy=1):
+    """Compute outline points for the size overlay.
+
+    Returns a list of (x, y) tuples.
+    For 1 extent returns None (caller should use native ellipse).
+    """
+    if not extents or len(extents) == 1:
+        return None
+
+    theta = math.radians(image_rotate - pa - 90)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    points = []
+    if len(extents) == 2:
+        rx = extents[0] * px_per_arcsec / 2
+        ry = extents[1] * px_per_arcsec / 2
+        for i in range(36):
+            t = 2 * math.pi * i / 36
+            x = rx * math.cos(t)
+            y = ry * math.sin(t)
+            points.append(
+                (cx + fx * (x * cos_t - y * sin_t), cy + fy * (x * sin_t + y * cos_t))
+            )
+    else:
+        step = 2 * math.pi / len(extents)
+        for i, ext in enumerate(extents):
+            angle = i * step - math.pi / 2
+            r = ext * px_per_arcsec / 2
+            x = r * math.cos(angle)
+            y = r * math.sin(angle)
+            points.append(
+                (cx + fx * (x * cos_t - y * sin_t), cy + fy * (x * sin_t + y * cos_t))
+            )
+    return points
+
+
+def vertex_overlay_points(
+    vertices, obj_ra, obj_dec, image_rotate, px_per_arcsec, cx, cy, fx=1, fy=1
+):
+    """Project RA/Dec vertex pairs to pixel coords via gnomonic projection.
+
+    vertices: list of [ra, dec] pairs in degrees.
+    obj_ra, obj_dec: object center in degrees.
+    Returns list of (x, y) pixel tuples.
+    """
+    theta = math.radians(image_rotate)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    ra0 = math.radians(obj_ra)
+    dec0 = math.radians(obj_dec)
+    cos_dec0 = math.cos(dec0)
+    sin_dec0 = math.sin(dec0)
+
+    points = []
+    for ra_deg, dec_deg in vertices:
+        ra = math.radians(ra_deg)
+        dec = math.radians(dec_deg)
+        cos_dec = math.cos(dec)
+        sin_dec = math.sin(dec)
+        dra = ra - ra0
+
+        cos_c = sin_dec0 * sin_dec + cos_dec0 * cos_dec * math.cos(dra)
+        if cos_c <= 0:
+            continue
+        # gnomonic: xi points East, eta points North (radians)
+        xi = (cos_dec * math.sin(dra)) / cos_c
+        eta = (cos_dec0 * sin_dec - sin_dec0 * cos_dec * math.cos(dra)) / cos_c
+
+        # convert to arcsec offsets then pixels
+        dx_arcsec = -xi * 206264.806  # negate: East is left
+        dy_arcsec = -eta * 206264.806  # negate: North is up, pixel y is down
+
+        dx_px = dx_arcsec * px_per_arcsec
+        dy_px = dy_arcsec * px_per_arcsec
+
+        # apply image rotation
+        rx = dx_px * cos_t - dy_px * sin_t
+        ry = dx_px * sin_t + dy_px * cos_t
+
+        points.append((cx + fx * rx, cy + fy * ry))
+    return points
+
+
+def draw_nsew_labels(draw, display_class, image_rotate, cx, cy, fx=1, fy=1):
+    """Draw NSEW cardinal direction labels — show topmost and leftmost only."""
+    from PiFinder.ui import ui_utils
+
+    (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
+    label_font = display_class.fonts.base
+    label_color = display_class.colors.get(64)
+    r_label = display_class.fov_res / 2 - 2
+    top_limit = display_class.titlebar_height
+    bottom_limit = display_class.fov_res - label_font.height * 2
+
+    candidates = [
+        ("N", nx, ny),
+        ("S", -nx, -ny),
+        ("E", ex, ey),
+        ("W", -ex, -ey),
+    ]
+    by_top = sorted(candidates, key=lambda c: c[2])
+    by_left = sorted(candidates, key=lambda c: c[1])
+    chosen = {by_top[0][0]: by_top[0]}
+    for c in by_left:
+        if c[0] not in chosen:
+            chosen[c[0]] = c
+            break
+
+    for label, dx, dy in chosen.values():
+        lx = cx + dx * r_label - label_font.width / 2
+        ly = cy + dy * r_label - label_font.height / 2
+        lx = max(0, min(lx, display_class.fov_res - label_font.width))
+        ly = max(top_limit, min(ly, bottom_limit))
+        ui_utils.shadow_outline_text(
+            draw,
+            (lx, ly),
+            label,
+            font=label_font,
+            align="left",
+            fill=label_color,
+            shadow_color=display_class.colors.get(0),
+            outline=1,
+        )
+
+
+def draw_size_overlay(
+    draw, catalog_object, display_class, fov, image_rotate, cx, cy, fx=1, fy=1
+):
+    """Draw the object size overlay (circle, ellipse, polygon, or RA/Dec vertices)."""
+    extents = catalog_object.size.extents
+    if not extents or fov <= 0:
+        return
+
+    px_per_arcsec = display_class.fov_res / (fov * 3600)
+    overlay_color = display_class.colors.get(100)
+
+    if catalog_object.size.is_vertices:
+        points = vertex_overlay_points(
+            extents,
+            catalog_object.ra,
+            catalog_object.dec,
+            image_rotate,
+            px_per_arcsec,
+            cx,
+            cy,
+            fx,
+            fy,
+        )
+        if len(points) >= 2:
+            draw.line(points, fill=overlay_color, width=1)
+    elif len(extents) == 1:
+        r = extents[0] * px_per_arcsec / 2
+        draw.ellipse(
+            [cx - r, cy - r, cx + r, cy + r],
+            outline=overlay_color,
+            width=1,
+        )
+    else:
+        points = size_overlay_points(
+            extents,
+            catalog_object.size.position_angle,
+            image_rotate,
+            px_per_arcsec,
+            cx,
+            cy,
+            fx,
+            fy,
+        )
+        if points:
+            draw.polygon(points, outline=overlay_color)
 
 
 def add_image_overlays(

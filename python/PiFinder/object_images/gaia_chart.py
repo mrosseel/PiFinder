@@ -24,6 +24,8 @@ from PiFinder.object_images.star_catalog import CatalogState, GaiaStarCatalog
 from PiFinder.object_images.image_utils import (
     pad_to_display_resolution,
     add_image_overlays,
+    draw_nsew_labels,
+    draw_size_overlay,
 )
 
 logger = logging.getLogger("PiFinder.GaiaChart")
@@ -137,7 +139,7 @@ class GaiaChartGenerator:
                 )
             )
 
-        logger.info(f">>> Creating GaiaStarCatalog instance...")
+        logger.info(">>> Creating GaiaStarCatalog instance...")
         import time
 
         t0 = time.time()
@@ -148,6 +150,59 @@ class GaiaChartGenerator:
             f">>> Catalog initialized: {catalog_path}, state: {self.catalog.state}"
         )
 
+    def _add_chart_overlays(
+        self,
+        image,
+        display_class,
+        catalog_object,
+        fov,
+        mag,
+        image_rotate,
+        flip_image,
+        flop_image,
+        show_nsew,
+        show_bbox,
+        limiting_magnitude,
+    ):
+        """Add FOV circle, NSEW labels, size overlay, and text overlays to chart image."""
+        draw = ImageDraw.Draw(image)
+        width, height = display_class.resolution
+        cx, cy = width / 2.0, height / 2.0
+        radius = min(width, height) / 2.0 - 2
+        marker_color = display_class.colors.get(64)
+        draw.ellipse(
+            [cx - radius, cy - radius, cx + radius, cy + radius],
+            outline=marker_color,
+            width=1,
+        )
+
+        fx = -1 if flip_image else 1
+        fy = -1 if flop_image else 1
+        if show_nsew:
+            draw_nsew_labels(draw, display_class, image_rotate, cx, cy, fx, fy)
+        if show_bbox and hasattr(catalog_object, "size") and catalog_object.size:
+            draw_size_overlay(
+                draw,
+                catalog_object,
+                display_class,
+                fov,
+                image_rotate,
+                cx,
+                cy,
+                fx,
+                fy,
+            )
+
+        return add_image_overlays(
+            image,
+            display_class,
+            fov,
+            mag,
+            self.config.equipment.active_eyepiece,
+            burn_in=True,
+            limiting_magnitude=limiting_magnitude,
+        )
+
     def generate_chart(
         self,
         catalog_object,
@@ -155,6 +210,8 @@ class GaiaChartGenerator:
         burn_in: bool = True,
         display_class=None,
         roll=None,
+        show_nsew: bool = True,
+        show_bbox: bool = True,
     ) -> Generator[Optional[Image.Image], None, None]:
         """
         Generate chart for object at current equipment settings
@@ -180,7 +237,7 @@ class GaiaChartGenerator:
             yield None
             return
 
-        logger.info(f">>> Catalog state is READY, proceeding...")
+        logger.info(">>> Catalog state is READY, proceeding...")
 
         # Check cache
         cache_key = self.get_cache_key(catalog_object)
@@ -199,30 +256,26 @@ class GaiaChartGenerator:
 
             # Add overlays if burn_in requested
             if burn_in and display_class is not None:
-                # Add FOV circle
-                draw = ImageDraw.Draw(image)
-                width, height = display_class.resolution
-                cx, cy = width / 2.0, height / 2.0
-                radius = min(width, height) / 2.0 - 2
-                marker_color = display_class.colors.get(64)
-                bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-                draw.ellipse(bbox, outline=marker_color, width=1)
-
-                # Add text overlays
-                sqm = self.shared_state.sqm()
-                mag_limit_calculated = self.get_limiting_magnitude(sqm)
                 equipment = self.config.equipment
+                telescope = equipment.active_telescope
                 fov = equipment.calc_tfov()
-                mag = equipment.calc_magnification()
+                img_rot = 180 if telescope and telescope.obstruction_perc > 0 else 0
+                if roll is not None:
+                    img_rot += roll
+                sqm = self.shared_state.sqm()
 
-                image = add_image_overlays(
+                image = self._add_chart_overlays(
                     image,
                     display_class,
+                    catalog_object,
                     fov,
-                    mag,
-                    equipment.active_eyepiece,
-                    burn_in=True,
-                    limiting_magnitude=mag_limit_calculated,
+                    equipment.calc_magnification(),
+                    img_rot,
+                    telescope.flip_image if telescope else False,
+                    telescope.flop_image if telescope else False,
+                    show_nsew,
+                    show_bbox,
+                    self.get_limiting_magnitude(sqm),
                 )
 
             yield image
@@ -296,7 +349,7 @@ class GaiaChartGenerator:
         final_image = None
         iteration_count = 0
 
-        logger.info(f">>> Starting star generator loop...")
+        logger.info(">>> Starting star generator loop...")
         for stars, is_complete in stars_generator:
             iteration_count += 1
             logger.info(
@@ -330,24 +383,18 @@ class GaiaChartGenerator:
 
             # Add overlays if burn_in requested
             if burn_in and display_class is not None:
-                # Add FOV circle BEFORE text overlays so it appears behind them
-                draw = ImageDraw.Draw(display_image)
-                width, height = display_class.resolution
-                cx, cy = width / 2.0, height / 2.0
-                radius = min(width, height) / 2.0 - 2  # Leave 2 pixel margin
-                marker_color = display_class.colors.get(64)  # Subtle but visible
-                bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-                draw.ellipse(bbox, outline=marker_color, width=1)
-
-                # Add text overlays (using shared utility)
-                display_image = add_image_overlays(
+                display_image = self._add_chart_overlays(
                     display_image,
                     display_class,
+                    catalog_object,
                     fov,
                     mag,
-                    equipment.active_eyepiece,
-                    burn_in=True,
-                    limiting_magnitude=mag_limit_calculated,  # Pass uncapped value for display
+                    image_rotate,
+                    flip_image,
+                    flop_image,
+                    show_nsew,
+                    show_bbox,
+                    mag_limit_calculated,
                 )
 
             t_render_end = time.time()
@@ -404,24 +451,18 @@ class GaiaChartGenerator:
 
             # Add overlays if burn_in requested
             if burn_in and display_class is not None:
-                # Add FOV circle
-                draw = ImageDraw.Draw(final_display_image)
-                width, height = display_class.resolution
-                cx, cy = width / 2.0, height / 2.0
-                radius = min(width, height) / 2.0 - 2
-                marker_color = display_class.colors.get(64)
-                bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-                draw.ellipse(bbox, outline=marker_color, width=1)
-
-                # Add overlays
-                final_display_image = add_image_overlays(
+                final_display_image = self._add_chart_overlays(
                     final_display_image,
                     display_class,
+                    catalog_object,
                     fov,
                     mag,
-                    equipment.active_eyepiece,
-                    burn_in=True,
-                    limiting_magnitude=mag_limit_calculated,
+                    image_rotate,
+                    flip_image,
+                    flop_image,
+                    show_nsew,
+                    show_bbox,
+                    mag_limit_calculated,
                 )
 
             yield final_display_image
@@ -464,9 +505,7 @@ class GaiaChartGenerator:
         width, height = resolution
         # Use NumPy array for fast pixel operations
         image_array = np.zeros((height, width, 3), dtype=np.uint8)
-        image = Image.new("RGB", (width, height), (0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        
+
         logger.info(
             f"Render Chart: {len(stars)} stars input, center=({center_ra:.4f}, {center_dec:.4f}), fov={fov:.4f}, res={resolution}"
         )
@@ -561,9 +600,7 @@ class GaiaChartGenerator:
         x_visible = x_screen[mask]
         y_visible = y_screen[mask]
         mag_visible = mag_arr[mask]
-        ra_visible = ra_arr[mask]
-        dec_visible = dec_arr[mask]
-        
+
         logger.info(
             f"Render Chart: {len(x_visible)} stars visible on screen (of {len(stars)} total)"
         )
@@ -999,8 +1036,6 @@ class GaiaChartGenerator:
         Returns:
             Limiting magnitude (uncapped - caller caps for catalog queries)
         """
-        import math
-
         equipment = self.config.equipment
         telescope = equipment.active_telescope
         eyepiece = equipment.active_eyepiece

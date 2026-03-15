@@ -6,7 +6,7 @@ Gaia chart provider - generates star charts from Gaia catalog
 
 from pathlib import Path
 from typing import Generator
-from PIL import Image, ImageChops, ImageDraw
+from PIL import ImageChops
 from PiFinder import utils
 from .image_base import ImageProvider, ImageType
 import logging
@@ -98,6 +98,8 @@ class ChartImageProvider(ImageProvider):
                 burn_in=burn_in,
                 display_class=display_class,
                 roll=roll,
+                show_nsew=kwargs.get("show_nsew", True),
+                show_bbox=kwargs.get("show_bbox", True),
             ):
                 if image is None:
                     # Catalog not ready yet, show "Loading..." with progress

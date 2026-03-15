@@ -1,6 +1,6 @@
 import math
 import pytest
-from PiFinder.cat_images import cardinal_vectors, size_overlay_points
+from PiFinder.object_images.image_utils import cardinal_vectors, size_overlay_points
 
 
 def approx_pt(pt, abs=1e-6):
@@ -129,8 +129,10 @@ class TestSizeOverlayPoints:
             pts = size_overlay_points([200, 40], 90, rot, 1.0, cx, cy)
             dists = [(p[0] - cx, p[1] - cy) for p in pts]
             farthest = max(dists, key=lambda d: math.hypot(*d))
-            direction = (farthest[0] / math.hypot(*farthest),
-                         farthest[1] / math.hypot(*farthest))
+            direction = (
+                farthest[0] / math.hypot(*farthest),
+                farthest[1] / math.hypot(*farthest),
+            )
             dot = abs(direction[0] * ex + direction[1] * ey)
             assert dot == pytest.approx(1.0, abs=0.02), (
                 f"PA=90 major axis not along East at image_rotate={rot}"
@@ -145,8 +147,10 @@ class TestSizeOverlayPoints:
             # Find the point farthest from center — should be along North
             dists = [(p[0] - cx, p[1] - cy) for p in pts]
             farthest = max(dists, key=lambda d: math.hypot(*d))
-            direction = (farthest[0] / math.hypot(*farthest),
-                         farthest[1] / math.hypot(*farthest))
+            direction = (
+                farthest[0] / math.hypot(*farthest),
+                farthest[1] / math.hypot(*farthest),
+            )
             # Should be parallel to North (same or opposite direction)
             dot = abs(direction[0] * nx + direction[1] * ny)
             assert dot == pytest.approx(1.0, abs=0.02), (
