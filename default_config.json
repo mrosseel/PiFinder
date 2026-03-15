@@ -21,6 +21,8 @@
     "obj_chart_crosshair_speed": "2.0",
     "obj_chart_lm_mode": "auto",
     "obj_chart_lm_fixed": 14.0,
+    "image_nsew": true,
+    "image_bbox": true,
     "solve_pixel": [256, 256],
     "gps_type": "ublox",
     "gps_baud_rate": 9600,

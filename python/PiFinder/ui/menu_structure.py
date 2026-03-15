@@ -968,48 +968,87 @@ pifinder_menu = {
                     ],
                 },
                 {
-                    "name": _("Camera Exp"),
+                    "name": _("Image..."),
                     "class": UITextMenu,
                     "select": "single",
-                    "config_option": "camera_exp",
-                    "label": "camera_exposure",
-                    "post_callback": callbacks.set_exposure,
                     "items": [
                         {
-                            "name": _("Auto"),
-                            "value": "auto",
-                            "name_suffix_callback": callbacks.get_camera_exposure_display,
+                            "name": _("NSEW Labels"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "image_nsew",
+                            "items": [
+                                {
+                                    "name": _("On"),
+                                    "value": True,
+                                },
+                                {
+                                    "name": _("Off"),
+                                    "value": False,
+                                },
+                            ],
                         },
                         {
-                            "name": _("0.025s"),
-                            "value": 25000,
-                        },
-                        {
-                            "name": _("0.05s"),
-                            "value": 50000,
-                        },
-                        {
-                            "name": _("0.1s"),
-                            "value": 100000,
-                        },
-                        {
-                            "name": _("0.2s"),
-                            "value": 200000,
-                        },
-                        {
-                            "name": _("0.4s"),
-                            "value": 400000,
-                        },
-                        {
-                            "name": _("0.8s"),
-                            "value": 800000,
-                        },
-                        {
-                            "name": _("1s"),
-                            "value": 1000000,
+                            "name": _("Object Size"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "image_bbox",
+                            "items": [
+                                {
+                                    "name": _("On"),
+                                    "value": True,
+                                },
+                                {
+                                    "name": _("Off"),
+                                    "value": False,
+                                },
+                            ],
                         },
                     ],
                 },
+                {
+                "name": _("Camera Exp"),
+                "class": UITextMenu,
+                "select": "single",
+                "config_option": "camera_exp",
+                "label": "camera_exposure",
+                "post_callback": callbacks.set_exposure,
+                "items": [
+                    {
+                        "name": _("Auto"),
+                        "value": "auto",
+                        "name_suffix_callback": callbacks.get_camera_exposure_display,
+                    },
+                    {
+                        "name": _("0.025s"),
+                        "value": 25000,
+                    },
+                    {
+                        "name": _("0.05s"),
+                        "value": 50000,
+                    },
+                    {
+                        "name": _("0.1s"),
+                        "value": 100000,
+                    },
+                    {
+                        "name": _("0.2s"),
+                        "value": 200000,
+                    },
+                    {
+                        "name": _("0.4s"),
+                        "value": 400000,
+                    },
+                    {
+                        "name": _("0.8s"),
+                        "value": 800000,
+                    },
+                    {
+                        "name": _("1s"),
+                        "value": 1000000,
+                    },
+                ],
+            },
                 {
                     "name": _("WiFi Mode"),
                     "class": UITextMenu,

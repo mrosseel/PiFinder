@@ -355,6 +355,9 @@ class UIObjectDetails(UIModule):
             shared_state=self.shared_state,
             chart_generator=chart_gen,  # Pass our chart generator to object_images
             force_chart=self._force_gaia_chart,  # Toggle state
+            telescope=self.config_object.equipment.active_telescope,
+            show_nsew=self.config_object.get_option("image_nsew", True),
+            show_bbox=self.config_object.get_option("image_bbox", True),
         )
 
         # Check if it's a generator (progressive Gaia chart) or direct image (POSS)
