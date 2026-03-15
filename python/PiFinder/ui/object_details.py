@@ -402,11 +402,10 @@ class UIObjectDetails(UIModule):
 
     def _check_catalog_initialized(self):
         code = self.object.catalog_code
-        if code in ["PUSH", "USER"]:
-            # Special codes for objects pushed from sky-safari or created by user
-            return True
         catalog = self.catalogs.get_catalog_by_code(code)
-        return catalog and catalog.initialized
+        if catalog is None:
+            return True
+        return catalog.initialized
 
     def _get_pulse_factor(self):
         """
