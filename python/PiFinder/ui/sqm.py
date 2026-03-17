@@ -40,17 +40,14 @@ class UISQM(UIModule):
         # Marking menu definition
         self.marking_menu = MarkingMenu(
             left=MarkingMenuOption(
-                label=_("CALC"),
+                label=_("CAL"),
                 callback=self._launch_calibration,
             ),
             down=MarkingMenuOption(
-                label=_("DEBUG"),
-                callback=self._launch_debug_sweep,
-            ),
-            right=MarkingMenuOption(
                 label=_("CORRECT"),
-                callback=self._launch_correction,
+                callback=self._launch_sqm_sweep,
             ),
+            right=MarkingMenuOption(),
         )
 
     def update(self, force=False):
@@ -172,7 +169,7 @@ class UISQM(UIModule):
                 if image_metadata and "exposure_time" in image_metadata:
                     exp_ms = image_metadata["exposure_time"] / 1000  # Convert µs to ms
                     if exp_ms >= 1000:
-                        exp_str = f"{exp_ms/1000:.2f}s"
+                        exp_str = f"{exp_ms / 1000:.2f}s"
                     else:
                         exp_str = f"{exp_ms:.0f}ms"
                     self.draw.text(
@@ -299,28 +296,16 @@ class UISQM(UIModule):
         self.add_to_stack(calibration_def)
         return True  # Exit marking menu
 
-    def _launch_debug_sweep(self, marking_menu, selected_item):
-        """Launch the exposure sweep debug tool"""
-        from PiFinder.ui.exp_sweep import UIExpSweep
+    def _launch_sqm_sweep(self, marking_menu, selected_item):
+        """Launch the SQM correction sweep tool"""
+        from PiFinder.ui.sqm_sweep import UISQMSweep
 
         sweep_def = {
-            "name": _("Exposure Sweep"),
-            "class": UIExpSweep,
-            "label": "exp_sweep",
+            "name": _("SQM Sweep"),
+            "class": UISQMSweep,
+            "label": "sqm_sweep",
         }
         self.add_to_stack(sweep_def)
-        return True  # Exit marking menu
-
-    def _launch_correction(self, marking_menu, selected_item):
-        """Launch the SQM correction UI"""
-        from PiFinder.ui.sqm_correction import UISQMCorrection
-
-        correction_def = {
-            "name": _("SQM Correction"),
-            "class": UISQMCorrection,
-            "label": "sqm_correction",
-        }
-        self.add_to_stack(correction_def)
         return True  # Exit marking menu
 
     def get_sky_details(self, mag_arcsec):
