@@ -13,6 +13,7 @@ Features:
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Generator, Optional, Tuple
 
@@ -140,7 +141,8 @@ class GaiaChartGenerator:
             )
 
         logger.info(">>> Creating GaiaStarCatalog instance...")
-        import time
+
+
 
         t0 = time.time()
         self.catalog = GaiaStarCatalog(str(catalog_path))
@@ -162,7 +164,6 @@ class GaiaChartGenerator:
         flop_image,
         show_nsew,
         show_bbox,
-        limiting_magnitude,
     ):
         """Add FOV circle, NSEW labels, size overlay, and text overlays to chart image."""
         draw = ImageDraw.Draw(image)
@@ -180,7 +181,13 @@ class GaiaChartGenerator:
         fy = -1 if flop_image else 1
         if show_nsew:
             draw_nsew_labels(draw, display_class, image_rotate, cx, cy, fx, fy)
-        if show_bbox and hasattr(catalog_object, "size") and catalog_object.size:
+        crosshair_style = self.config.get_option("obj_chart_crosshair_style")
+        if (
+            show_bbox
+            and crosshair_style != "shape"
+            and hasattr(catalog_object, "size")
+            and catalog_object.size
+        ):
             draw_size_overlay(
                 draw,
                 catalog_object,
@@ -200,7 +207,6 @@ class GaiaChartGenerator:
             mag,
             self.config.equipment.active_eyepiece,
             burn_in=True,
-            limiting_magnitude=limiting_magnitude,
         )
 
     def generate_chart(
@@ -241,6 +247,7 @@ class GaiaChartGenerator:
 
         # Check cache
         cache_key = self.get_cache_key(catalog_object)
+        logger.info(f">>> Cache key: {cache_key}, in cache: {cache_key in self.chart_cache}")
         if cache_key in self.chart_cache:
             # Return cached base image, adding overlays if needed
             # Crosshair will be added by add_pulsating_crosshair() each frame
@@ -262,7 +269,6 @@ class GaiaChartGenerator:
                 img_rot = 180 if telescope and telescope.obstruction_perc > 0 else 0
                 if roll is not None:
                     img_rot += roll
-                sqm = self.shared_state.sqm()
 
                 image = self._add_chart_overlays(
                     image,
@@ -275,12 +281,12 @@ class GaiaChartGenerator:
                     telescope.flop_image if telescope else False,
                     show_nsew,
                     show_bbox,
-                    self.get_limiting_magnitude(sqm),
                 )
 
             yield image
             return
 
+        logger.info(">>> Past cache check, starting chart generation...")
         # Get equipment settings
         equipment = self.config.equipment
         fov = equipment.calc_tfov()
@@ -306,7 +312,8 @@ class GaiaChartGenerator:
 
         # Query stars PROGRESSIVELY (bright to faint)
         # This is a generator that yields partial results as each magnitude band loads
-        import time
+
+
 
         t0 = time.time()
 
@@ -394,7 +401,6 @@ class GaiaChartGenerator:
                     flop_image,
                     show_nsew,
                     show_bbox,
-                    mag_limit_calculated,
                 )
 
             t_render_end = time.time()
@@ -462,7 +468,6 @@ class GaiaChartGenerator:
                     flop_image,
                     show_nsew,
                     show_bbox,
-                    mag_limit_calculated,
                 )
 
             yield final_display_image
@@ -498,7 +503,8 @@ class GaiaChartGenerator:
         Returns:
             PIL Image in RGB (black background, red stars)
         """
-        import time
+
+
 
         t_start = time.time()
 
@@ -574,9 +580,9 @@ class GaiaChartGenerator:
         y_screen = height / 2.0 - y_proj * pixel_scale
 
         # Apply rotation to SCREEN coordinates (after scaling)
-        # This avoids magnifying small numerical errors
+        # Negate to match PIL.rotate() CCW convention used by POSS provider
         if rotation != 0:
-            rot_rad = np.radians(rotation)
+            rot_rad = np.radians(-rotation)
             cos_rot = np.cos(rot_rad)
             sin_rot = np.sin(rot_rad)
 
@@ -706,7 +712,8 @@ class GaiaChartGenerator:
         Returns:
             PIL Image with new stars added
         """
-        import time
+
+
 
         t_start = time.time()
 
@@ -762,9 +769,9 @@ class GaiaChartGenerator:
         x_screen = width / 2.0 - x_proj * pixel_scale
         y_screen = height / 2.0 - y_proj * pixel_scale
 
-        # Apply rotation
+        # Apply rotation (negate to match PIL.rotate() CCW convention)
         if rotation != 0:
-            rot_rad = np.radians(rotation)
+            rot_rad = np.radians(-rotation)
             cos_rot = np.cos(rot_rad)
             sin_rot = np.sin(rot_rad)
 

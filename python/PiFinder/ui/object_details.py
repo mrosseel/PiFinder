@@ -8,6 +8,7 @@ This module contains all the UI code for the object details screen
 
 from PiFinder.object_images import get_display_image
 from PiFinder.object_images.image_base import ImageType
+from PiFinder.object_images.image_utils import draw_size_overlay
 from PiFinder.object_images.star_catalog import CatalogState
 from PiFinder.ui.marking_menus import MarkingMenuOption, MarkingMenu
 from PiFinder.obj_types import OBJ_TYPES
@@ -123,6 +124,7 @@ class UIObjectDetails(UIModule):
         self._force_gaia_chart = (
             False  # Toggle: force Gaia chart even if POSS image exists
         )
+        self._chart_first_shown_time = None  # When chart image was first displayed
         self.eyepiece_input = EyepieceInput()  # Custom eyepiece input handler
         self.eyepiece_input_display = False  # Show eyepiece input popup
         self._custom_eyepiece = None  # Reference to custom eyepiece object in equipment list (None = not active)
@@ -241,6 +243,7 @@ class UIObjectDetails(UIModule):
         # during generator consumption. If we don't do this, calling self.update()
         # while consuming yields will trigger update() -> update_object_info() recursion.
         self._is_showing_loading_chart = False
+        self._chart_first_shown_time = None  # Reset LM overlay timer
 
         # Title...
         self.title = self.object.display_name
@@ -402,9 +405,11 @@ class UIObjectDetails(UIModule):
 
     def _check_catalog_initialized(self):
         code = self.object.catalog_code
+        if code in ["PUSH", "USER"]:
+            return True
         catalog = self.catalogs.get_catalog_by_code(code)
         if catalog is None:
-            return True
+            return False
         return catalog.initialized
 
     def _get_pulse_factor(self):
@@ -430,10 +435,11 @@ class UIObjectDetails(UIModule):
         # Size multiplier: 0.6 to 1.0 (smaller range, smoother looking)
         size_multiplier = 0.6 + 0.4 * pulse_factor
 
-        # Color intensity: 48 to 128 (brighter and more visible)
-        color_intensity = int(48 + 80 * pulse_factor)
+        # Color intensity fixed at 128; alpha controls visibility
+        color_intensity = 128
+        alpha = int(255 * pulse_factor)
 
-        return pulse_factor, size_multiplier, color_intensity
+        return pulse_factor, size_multiplier, color_intensity, alpha
 
     def _get_fade_factor(self):
         """
@@ -454,11 +460,11 @@ class UIObjectDetails(UIModule):
         # Sine wave for smooth fading (0.0 to 1.0 range)
         fade_factor = 0.5 + 0.5 * np.sin(2 * np.pi * t / fade_period)
 
-        # Color intensity: 0 to 128 (fade from invisible to half brightness)
-        # Use round instead of int for better distribution
-        color_intensity = round(128 * fade_factor)
+        # Color intensity fixed at 128; alpha controls visibility
+        color_intensity = 128
+        alpha = int(255 * fade_factor)
 
-        return color_intensity
+        return color_intensity, alpha
 
     def _draw_crosshair_simple(self, mode="off"):
         """
@@ -473,7 +479,7 @@ class UIObjectDetails(UIModule):
         cx, cy = int(width / 2.0), int(height / 2.0)
 
         if mode == "pulse":
-            pulse_factor, _, _ = self._get_pulse_factor()
+            pulse_factor, _, _, alpha = self._get_pulse_factor()
             # Size pulsates from 7 down to 4 pixels (inverted - more steps)
             outer = int(
                 7.0 - (3.0 * pulse_factor)
@@ -520,17 +526,16 @@ class UIObjectDetails(UIModule):
         cx, cy = width / 2.0, height / 2.0
 
         if mode == "pulse":
-            pulse_factor, _, color_intensity = self._get_pulse_factor()
+            pulse_factor, _, color_intensity, alpha = self._get_pulse_factor()
             radius = 8.0 - (4.0 * pulse_factor)  # 8.0 down to 4.0 (smooth animation)
         elif mode == "fade":
-            color_intensity = self._get_fade_factor()
+            color_intensity, alpha = self._get_fade_factor()
             radius = 4  # Fixed minimum size
         else:
-            color_intensity = 64
+            color_intensity, alpha = 64, 255
             radius = 4  # Smaller fixed size
 
-        # Draw directly on screen
-        marker_color = (color_intensity, 0, 0)
+        marker_color = (color_intensity, 0, 0, alpha)
         bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
         self.draw.ellipse(bbox, outline=marker_color, width=1)
 
@@ -545,7 +550,7 @@ class UIObjectDetails(UIModule):
         cx, cy = width / 2.0, height / 2.0
 
         if mode == "pulse":
-            pulse_factor, _, color_intensity = self._get_pulse_factor()
+            pulse_factor, _, color_intensity, alpha = self._get_pulse_factor()
             # Pulsate from larger to smaller (smooth animation)
             radii = [
                 4.0 - (2.0 * pulse_factor),
@@ -553,14 +558,13 @@ class UIObjectDetails(UIModule):
                 12.0 - (6.0 * pulse_factor),
             ]  # 4→2, 8→4, 12→6
         elif mode == "fade":
-            color_intensity = self._get_fade_factor()
+            color_intensity, alpha = self._get_fade_factor()
             radii = [2, 4, 6]  # Fixed minimum radii
         else:
-            color_intensity = 64
+            color_intensity, alpha = 64, 255
             radii = [2, 4, 6]  # Smaller fixed radii
 
-        # Draw directly on screen
-        marker_color = (color_intensity, 0, 0)
+        marker_color = (color_intensity, 0, 0, alpha)
         for radius in radii:
             bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
             self.draw.ellipse(bbox, outline=marker_color, width=1)
@@ -576,22 +580,21 @@ class UIObjectDetails(UIModule):
         cx, cy = int(width / 2.0), int(height / 2.0)
 
         if mode == "pulse":
-            pulse_factor, _, color_intensity = self._get_pulse_factor()
+            pulse_factor, _, color_intensity, alpha = self._get_pulse_factor()
             size = int(8.0 - (4.0 * pulse_factor))  # 8.0 down to 4.0 (smooth animation)
             length = int(
                 5.0 - (2.0 * pulse_factor)
             )  # 5.0 down to 3.0 (smooth animation)
         elif mode == "fade":
-            color_intensity = self._get_fade_factor()
+            color_intensity, alpha = self._get_fade_factor()
             size = 4  # Fixed minimum size
             length = 3  # Fixed minimum length
         else:
-            color_intensity = 64
+            color_intensity, alpha = 64, 255
             size = 4  # Smaller distance from center to bracket corner
             length = 3  # Shorter bracket arms
 
-        # Draw directly on screen
-        marker_color = (color_intensity, 0, 0)
+        marker_color = (color_intensity, 0, 0, alpha)
 
         # Top-left bracket
         self.draw.line(
@@ -652,20 +655,19 @@ class UIObjectDetails(UIModule):
         cx, cy = width / 2.0, height / 2.0
 
         if mode == "pulse":
-            pulse_factor, _, color_intensity = self._get_pulse_factor()
+            pulse_factor, _, color_intensity, alpha = self._get_pulse_factor()
             distance = 8.0 - (4.0 * pulse_factor)  # 8 down to 4 (smooth animation)
             dot_size = 3.0 - (1.5 * pulse_factor)  # 3 down to 1 (smooth animation)
         elif mode == "fade":
-            color_intensity = self._get_fade_factor()
+            color_intensity, alpha = self._get_fade_factor()
             distance = 4  # Fixed minimum distance
             dot_size = 1  # Fixed minimum size
         else:
-            color_intensity = 64
+            color_intensity, alpha = 64, 255
             distance = 4  # Smaller distance from center to dots
             dot_size = 1  # Smaller dot radius
 
-        # Draw directly on screen
-        marker_color = (color_intensity, 0, 0)
+        marker_color = (color_intensity, 0, 0, alpha)
 
         # Four corner dots
         positions = [
@@ -690,19 +692,116 @@ class UIObjectDetails(UIModule):
         cx, cy = width / 2.0, height / 2.0
 
         if mode == "pulse":
-            pulse_factor, _, color_intensity = self._get_pulse_factor()
+            pulse_factor, _, color_intensity, alpha = self._get_pulse_factor()
         elif mode == "fade":
-            color_intensity = self._get_fade_factor()
+            color_intensity, alpha = self._get_fade_factor()
         else:
-            color_intensity = 64
+            color_intensity, alpha = 64, 255
 
-        # Draw directly on screen
-        marker_color = (color_intensity, 0, 0)
+        marker_color = (color_intensity, 0, 0, alpha)
 
         # Horizontal line
         self.draw.line([0, cy, width, cy], fill=marker_color, width=1)
         # Vertical line
         self.draw.line([cx, 0, cx, height], fill=marker_color, width=1)
+
+    def _draw_crosshair_shape(self, mode="off"):
+        """
+        Pulse the object's extent shape (circle/ellipse/polygon/line segments).
+        Falls back to simple crosshair for objects with no extents.
+        """
+        obj_size = getattr(self.object, "size", None)
+        if obj_size is None or not getattr(obj_size, "extents", None):
+            self._draw_crosshair_simple(mode=mode)
+            return
+
+        if mode == "pulse":
+            _, _, color_intensity, alpha = self._get_pulse_factor()
+        elif mode == "fade":
+            color_intensity, alpha = self._get_fade_factor()
+        else:
+            color_intensity, alpha = 64, 255
+
+        self._draw_size_overlay(overlay_color=(color_intensity, 0, 0, alpha))
+
+    def _draw_size_overlay(self, color_intensity=100, overlay_color=None):
+        """
+        Draw the object extent shape at the chart centre.
+
+        Shared by the static overlay (baked into chart) and the
+        pulsing "shape" crosshair style.
+
+        overlay_color: direct RGBA tuple, bypasses color_intensity lookup.
+        """
+        obj_size = getattr(self.object, "size", None)
+        if obj_size is None or not getattr(obj_size, "extents", None):
+            return
+
+        equipment = self.config_object.equipment
+        fov_deg = equipment.calc_tfov()
+        if fov_deg <= 0:
+            fov_deg = 10.0
+
+        telescope = equipment.active_telescope
+        roll = self.shared_state.solution()
+        roll_val = roll.get("Roll", 0) if roll else 0
+
+        if telescope and telescope.obstruction_perc > 0:
+            image_rotate = 180
+        else:
+            image_rotate = 0
+        if roll_val is not None:
+            image_rotate += roll_val
+
+        fx = -1 if (telescope and telescope.flip_image) else 1
+        fy = -1 if (telescope and telescope.flop_image) else 1
+
+        width, height = self.display_class.resolution
+        cx, cy = width / 2.0, height / 2.0
+
+        draw_size_overlay(
+            self.draw,
+            self.object,
+            self.display_class,
+            fov_deg,
+            image_rotate,
+            cx,
+            cy,
+            fx,
+            fy,
+            color_intensity=color_intensity,
+            overlay_color=overlay_color,
+        )
+
+    def _draw_lm_overlay(self):
+        """Draw limiting magnitude text at top-center (temporary overlay)."""
+        from PiFinder.ui import ui_utils
+
+        chart_gen = self._get_gaia_chart_generator()
+        sqm = self.shared_state.sqm()
+        lm = chart_gen.get_limiting_magnitude(sqm)
+
+        if lm > 17.0:
+            lm_text = "LM:>17"
+        else:
+            lm_text = f"LM:{lm:.1f}"
+
+        lm_bbox = self.draw.textbbox(
+            (0, 0), lm_text, font=self.display_class.fonts.base.font
+        )
+        lm_width = lm_bbox[2] - lm_bbox[0]
+        lm_x = (self.display_class.resX - lm_width) // 2
+
+        ui_utils.shadow_outline_text(
+            self.draw,
+            (lm_x, self.display_class.titlebar_height - 1),
+            lm_text,
+            font=self.display_class.fonts.base,
+            align="left",
+            fill=self.colors.get(254),
+            shadow_color=self.colors.get(0),
+            outline=2,
+        )
 
     def _draw_fov_circle(self):
         """
@@ -764,15 +863,22 @@ class UIObjectDetails(UIModule):
             return
 
         if not self._check_catalog_initialized():
+            catalog = self.catalogs.get_catalog_by_code(self.object.catalog_code)
+            if catalog and not catalog.initialized:
+                msg1 = _("Calculating")
+                msg2 = _(f"positions{'.' * int(self._elipsis_count / 10)}")
+            else:
+                msg1 = _("Loading")
+                msg2 = _(f"catalog{'.' * int(self._elipsis_count / 10)}")
             self.draw.text(
                 (10, 70),
-                _("Calculating"),
+                msg1,
                 font=self.fonts.large.font,
                 fill=self.colors.get(255),
             )
             self.draw.text(
                 (10, 90),
-                _(f"positions{'.' * int(self._elipsis_count / 10)}"),
+                msg2,
                 font=self.fonts.large.font,
                 fill=self.colors.get(255),
             )
@@ -996,25 +1102,36 @@ class UIObjectDetails(UIModule):
                 and self.object_image.image_type == ImageType.GAIA_CHART
             )
             if is_chart:
+                # Track when chart was first shown for LM timeout
+                if self._chart_first_shown_time is None:
+                    self._chart_first_shown_time = time.time()
+
+                # Draw LM overlay for 4 seconds after chart appears
+                if time.time() - self._chart_first_shown_time < 4.0:
+                    self._draw_lm_overlay()
+                    force = True
+
                 crosshair_mode = self.config_object.get_option("obj_chart_crosshair")
                 crosshair_style = self.config_object.get_option(
                     "obj_chart_crosshair_style"
                 )
 
                 if crosshair_mode != "off":
-                    style_methods = {
-                        "simple": self._draw_crosshair_simple,
-                        "circle": self._draw_crosshair_circle,
-                        "bullseye": self._draw_crosshair_bullseye,
-                        "brackets": self._draw_crosshair_brackets,
-                        "dots": self._draw_crosshair_dots,
-                        "cross": self._draw_crosshair_cross,
-                    }
-
-                    draw_method = style_methods.get(
-                        crosshair_style, self._draw_crosshair_simple
-                    )
-                    draw_method(mode=crosshair_mode)
+                    if crosshair_style == "shape":
+                        self._draw_crosshair_shape(mode=crosshair_mode)
+                    else:
+                        style_methods = {
+                            "simple": self._draw_crosshair_simple,
+                            "circle": self._draw_crosshair_circle,
+                            "bullseye": self._draw_crosshair_bullseye,
+                            "brackets": self._draw_crosshair_brackets,
+                            "dots": self._draw_crosshair_dots,
+                            "cross": self._draw_crosshair_cross,
+                        }
+                        draw_method = style_methods.get(
+                            crosshair_style, self._draw_crosshair_simple
+                        )
+                        draw_method(mode=crosshair_mode)
 
                     if crosshair_mode in ["pulse", "fade"]:
                         force = True
@@ -1137,7 +1254,7 @@ class UIObjectDetails(UIModule):
         Cycle through crosshair styles
         """
         current_style = self.config_object.get_option("obj_chart_crosshair_style")
-        styles = ["simple", "circle", "bullseye", "brackets", "dots", "cross"]
+        styles = ["shape", "simple", "circle", "bullseye", "brackets", "dots", "cross"]
         current_index = styles.index(current_style) if current_style in styles else 0
         next_index = (current_index + 1) % len(styles)
         self.config_object.set_option("obj_chart_crosshair_style", styles[next_index])

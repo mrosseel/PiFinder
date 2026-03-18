@@ -900,6 +900,10 @@ pifinder_menu = {
                             "config_option": "obj_chart_crosshair_style",
                             "items": [
                                 {
+                                    "name": _("Shape"),
+                                    "value": "shape",
+                                },
+                                {
                                     "name": _("Simple"),
                                     "value": "simple",
                                 },
@@ -941,12 +945,12 @@ pifinder_menu = {
                                     "value": "2.0",
                                 },
                                 {
-                                    "name": _("Slow (3s)"),
-                                    "value": "3.0",
+                                    "name": _("Slow (4s)"),
+                                    "value": "4.0",
                                 },
                                 {
-                                    "name": _("Very Slow (4s)"),
-                                    "value": "4.0",
+                                    "name": _("Very Slow (8s)"),
+                                    "value": "8.0",
                                 },
                             ],
                         },

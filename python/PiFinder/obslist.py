@@ -45,13 +45,13 @@ def write_list(catalog_objects, name):
 
 def _entry_from_composite(obj: CompositeObject) -> ObsListEntry:
     """Convert a CompositeObject to an ObsListEntry."""
-    mag_val = obj.mag.filter_mag if obj.mag.filter_mag != MagnitudeObject.UNKNOWN_MAG else None
     return ObsListEntry(
         name=obj.display_name,
         ra=obj.ra,
         dec=obj.dec,
         obj_type=obj.obj_type,
-        mag=mag_val,
+        mag=obj.mag,
+        size=obj.size,
         catalog_code=obj.catalog_code,
         sequence=obj.sequence,
         description=obj.description,
@@ -109,11 +109,12 @@ def _coordinate_object(entry: ObsListEntry, index: int) -> CompositeObject:
         dec=entry.dec,
         obj_type=entry.obj_type or "?",
         const=const,
+        size=entry.size,
         catalog_code=entry.catalog_code or "OBS",
         sequence=entry.sequence or (index + 1),
         description=entry.description or entry.name,
         names=[entry.name],
-        mag=MagnitudeObject([entry.mag] if entry.mag is not None else []),
+        mag=entry.mag,
     )
 
 

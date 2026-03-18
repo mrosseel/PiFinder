@@ -34,10 +34,14 @@ def size_overlay_points(extents, pa, image_rotate, px_per_arcsec, cx, cy, fx=1, 
     if not extents or len(extents) == 1:
         return None
 
-    theta = math.radians(image_rotate - pa - 90)
+    # Negate image_rotate to match PIL.rotate()'s CCW convention.
+    # Without negation, the bug is hidden when roll=0 (±180 ≡ ∓180).
+    theta = math.radians(-image_rotate - pa - 90)
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
 
+    # fx is set by flip_image (FLIP_TOP_BOTTOM = Y negate),
+    # fy is set by flop_image (FLIP_LEFT_RIGHT = X negate)
     points = []
     if len(extents) == 2:
         rx = extents[0] * px_per_arcsec / 2
@@ -47,7 +51,7 @@ def size_overlay_points(extents, pa, image_rotate, px_per_arcsec, cx, cy, fx=1, 
             x = rx * math.cos(t)
             y = ry * math.sin(t)
             points.append(
-                (cx + fx * (x * cos_t - y * sin_t), cy + fy * (x * sin_t + y * cos_t))
+                (cx + fy * (x * cos_t - y * sin_t), cy + fx * (x * sin_t + y * cos_t))
             )
     else:
         step = 2 * math.pi / len(extents)
@@ -57,7 +61,7 @@ def size_overlay_points(extents, pa, image_rotate, px_per_arcsec, cx, cy, fx=1, 
             x = r * math.cos(angle)
             y = r * math.sin(angle)
             points.append(
-                (cx + fx * (x * cos_t - y * sin_t), cy + fy * (x * sin_t + y * cos_t))
+                (cx + fy * (x * cos_t - y * sin_t), cy + fx * (x * sin_t + y * cos_t))
             )
     return points
 
@@ -65,81 +69,122 @@ def size_overlay_points(extents, pa, image_rotate, px_per_arcsec, cx, cy, fx=1, 
 def vertex_overlay_points(
     vertices, obj_ra, obj_dec, image_rotate, px_per_arcsec, cx, cy, fx=1, fy=1
 ):
-    """Project RA/Dec vertex pairs to pixel coords via gnomonic projection.
+    """Project RA/Dec vertex pairs to pixel coords.
+
+    Uses the same linear tangent-plane projection as the Gaia chart renderer
+    so that overlay lines align with plotted stars.
 
     vertices: list of [ra, dec] pairs in degrees.
     obj_ra, obj_dec: object center in degrees.
     Returns list of (x, y) pixel tuples.
     """
-    theta = math.radians(image_rotate)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-
     ra0 = math.radians(obj_ra)
     dec0 = math.radians(obj_dec)
     cos_dec0 = math.cos(dec0)
-    sin_dec0 = math.sin(dec0)
+
+    # pixel_scale equivalent: px_per_arcsec * 3600 * (180/pi) = px_per_radian
+    px_per_rad = px_per_arcsec * 206264.806
+
+    # Negate rotation to match Gaia chart convention (PIL rotate CCW)
+    rot_rad = math.radians(-image_rotate)
+    cos_r = math.cos(rot_rad)
+    sin_r = math.sin(rot_rad)
 
     points = []
     for ra_deg, dec_deg in vertices:
         ra = math.radians(ra_deg)
         dec = math.radians(dec_deg)
-        cos_dec = math.cos(dec)
-        sin_dec = math.sin(dec)
+
         dra = ra - ra0
+        # Handle RA wrapping
+        if dra > math.pi:
+            dra -= 2 * math.pi
+        elif dra < -math.pi:
+            dra += 2 * math.pi
+        ddec = dec - dec0
 
-        cos_c = sin_dec0 * sin_dec + cos_dec0 * cos_dec * math.cos(dra)
-        if cos_c <= 0:
-            continue
-        # gnomonic: xi points East, eta points North (radians)
-        xi = (cos_dec * math.sin(dra)) / cos_c
-        eta = (cos_dec0 * sin_dec - sin_dec0 * cos_dec * math.cos(dra)) / cos_c
+        # Linear tangent plane (matches Gaia chart render_chart)
+        x_proj = dra * cos_dec0
+        y_proj = ddec
 
-        # convert to arcsec offsets then pixels
-        dx_arcsec = -xi * 206264.806  # negate: East is left
-        dy_arcsec = -eta * 206264.806  # negate: North is up, pixel y is down
+        # Screen coords: RA increases left (subtract x), Dec increases up (subtract y)
+        x_screen = cx - x_proj * px_per_rad
+        y_screen = cy - y_proj * px_per_rad
 
-        dx_px = dx_arcsec * px_per_arcsec
-        dy_px = dy_arcsec * px_per_arcsec
+        # Rotate around center
+        x_rel = x_screen - cx
+        y_rel = y_screen - cy
+        x_rot = x_rel * cos_r - y_rel * sin_r
+        y_rot = x_rel * sin_r + y_rel * cos_r
 
-        # apply image rotation
-        rx = dx_px * cos_t - dy_px * sin_t
-        ry = dx_px * sin_t + dy_px * cos_t
-
-        points.append((cx + fx * rx, cy + fy * ry))
+        # Apply flip/flop: fx is set by flip_image (FLIP_TOP_BOTTOM = Y negate),
+        # fy is set by flop_image (FLIP_LEFT_RIGHT = X negate)
+        points.append((cx + fy * x_rot, cy + fx * y_rot))
     return points
 
 
 def draw_nsew_labels(draw, display_class, image_rotate, cx, cy, fx=1, fy=1):
-    """Draw NSEW cardinal direction labels — show topmost and leftmost only."""
+    """Draw two cardinal labels as a pair (e.g. N+E) in the freest corner.
+
+    Picks the adjacent pair (NE, NW, SE, SW) whose labels are farthest
+    from occupied overlay zones (top-left: FOV, top-right: mag, bottom-left: eyepiece).
+    Labels are placed at exact circle-edge positions (no clamping) to preserve 90° angles.
+    """
     from PiFinder.ui import ui_utils
 
     (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
     label_font = display_class.fonts.base
     label_color = display_class.colors.get(64)
     r_label = display_class.fov_res / 2 - 2
-    top_limit = display_class.titlebar_height
-    bottom_limit = display_class.fov_res - label_font.height * 2
+    fw = label_font.width
+    fh = label_font.height
+    resX = display_class.resX
+    resY = display_class.resY
 
-    candidates = [
-        ("N", nx, ny),
-        ("S", -nx, -ny),
-        ("E", ex, ey),
-        ("W", -ex, -ey),
+    all_labels = {
+        "N": (nx, ny),
+        "S": (-nx, -ny),
+        "E": (ex, ey),
+        "W": (-ex, -ey),
+    }
+
+    # Overlay rectangles: (x, y, w, h) matching add_image_overlays positions
+    tb = display_class.titlebar_height - 1
+    obstructions = [
+        (1, tb, fw * 5, fh),  # top-left: FOV "0.52°"
+        (resX - fw * 4, tb, fw * 4, fh),  # top-right: mag "33x"
+        (1, resY - fh * 1.1, fw * 9, fh),  # bottom-left: eyepiece "38mm name"
     ]
-    by_top = sorted(candidates, key=lambda c: c[2])
-    by_left = sorted(candidates, key=lambda c: c[1])
-    chosen = {by_top[0][0]: by_top[0]}
-    for c in by_left:
-        if c[0] not in chosen:
-            chosen[c[0]] = c
-            break
 
-    for label, dx, dy in chosen.values():
-        lx = cx + dx * r_label - label_font.width / 2
-        ly = cy + dy * r_label - label_font.height / 2
-        lx = max(0, min(lx, display_class.fov_res - label_font.width))
-        ly = max(top_limit, min(ly, bottom_limit))
+    def label_pos(dx, dy):
+        lx = cx + dx * r_label - fw / 2
+        ly = cy + dy * r_label - fh / 2
+        # Pull inward along the radial direction if label goes off-screen
+        if lx < 0 or ly < 0 or lx + fw > resX or ly + fh > resY:
+            # Shrink radius until label fits, preserving angle
+            for shrink in range(1, int(r_label)):
+                r2 = r_label - shrink
+                lx = cx + dx * r2 - fw / 2
+                ly = cy + dy * r2 - fh / 2
+                if 0 <= lx and lx + fw <= resX and 0 <= ly and ly + fh <= resY:
+                    break
+        return lx, ly
+
+    def min_distance_to_obstructions(lx, ly):
+        """Minimum distance from label center to nearest obstruction rect."""
+        best = float("inf")
+        for ox, oy, ow, oh in obstructions:
+            # Closest point on rect to (lx, ly)
+            clamp_x = max(ox, min(lx, ox + ow))
+            clamp_y = max(oy, min(ly, oy + oh))
+            d = math.sqrt((lx - clamp_x) ** 2 + (ly - clamp_y) ** 2)
+            best = min(best, d)
+        return best
+
+    # DEBUG: show all 4 labels to verify angles
+    for label in ("N", "S", "E", "W"):
+        dx, dy = all_labels[label]
+        lx, ly = label_pos(dx, dy)
         ui_utils.shadow_outline_text(
             draw,
             (lx, ly),
@@ -152,18 +197,37 @@ def draw_nsew_labels(draw, display_class, image_rotate, cx, cy, fx=1, fy=1):
         )
 
 
-def draw_size_overlay(
-    draw, catalog_object, display_class, fov, image_rotate, cx, cy, fx=1, fy=1
+def _draw_size_overlay_raw(
+    draw,
+    catalog_object,
+    fov,
+    image_rotate,
+    px_per_arcsec,
+    cx,
+    cy,
+    fx,
+    fy,
+    overlay_color,
 ):
-    """Draw the object size overlay (circle, ellipse, polygon, or RA/Dec vertices)."""
+    """Low-level shape drawing (no AA). Called at native or supersampled scale."""
     extents = catalog_object.size.extents
-    if not extents or fov <= 0:
-        return
 
-    px_per_arcsec = display_class.fov_res / (fov * 3600)
-    overlay_color = display_class.colors.get(100)
-
-    if catalog_object.size.is_vertices:
+    if catalog_object.size.is_segments:
+        for segment in extents:
+            points = vertex_overlay_points(
+                segment,
+                catalog_object.ra,
+                catalog_object.dec,
+                image_rotate,
+                px_per_arcsec,
+                cx,
+                cy,
+                fx,
+                fy,
+            )
+            if len(points) == 2:
+                draw.line(points, fill=overlay_color, width=1)
+    elif catalog_object.size.is_vertices:
         points = vertex_overlay_points(
             extents,
             catalog_object.ra,
@@ -197,6 +261,70 @@ def draw_size_overlay(
         )
         if points:
             draw.polygon(points, outline=overlay_color)
+
+
+def draw_size_overlay(
+    draw,
+    catalog_object,
+    display_class,
+    fov,
+    image_rotate,
+    cx,
+    cy,
+    fx=1,
+    fy=1,
+    color_intensity=None,
+    overlay_color=None,
+):
+    """Draw the object size overlay with 2x supersampled anti-aliasing.
+
+    overlay_color: direct color tuple (RGB or RGBA), bypasses color_intensity lookup.
+    color_intensity: override brightness (0-255).  None uses default (100).
+    """
+    extents = catalog_object.size.extents
+    if not extents or fov <= 0:
+        return
+
+    px_per_arcsec = display_class.fov_res / (fov * 3600)
+    if overlay_color is None:
+        overlay_color = display_class.colors.get(
+            color_intensity if color_intensity is not None else 100
+        )
+
+    # Supersample at 2x for anti-aliasing
+    ss = 2
+    target_image = draw._image
+    w, h = target_image.size
+    tmp = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    tmp_draw = ImageDraw.Draw(tmp)
+
+    # Ensure overlay color has alpha for compositing
+    if len(overlay_color) == 3:
+        ss_color = overlay_color + (255,)
+    else:
+        ss_color = overlay_color
+
+    _draw_size_overlay_raw(
+        tmp_draw,
+        catalog_object,
+        fov,
+        image_rotate,
+        px_per_arcsec * ss,
+        cx * ss,
+        cy * ss,
+        fx,
+        fy,
+        ss_color,
+    )
+
+    # Downscale with LANCZOS and composite
+    tmp = tmp.resize((w, h), Image.LANCZOS)
+    target_image.paste(
+        Image.alpha_composite(
+            target_image.convert("RGBA"),
+            tmp,
+        ).convert(target_image.mode),
+    )
 
 
 def add_image_overlays(

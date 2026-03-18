@@ -131,7 +131,17 @@ class POSSImageProvider(ImageProvider):
             if show_nsew:
                 draw_nsew_labels(ri_draw, display_class, image_rotate, cx, cy, fx, fy)
 
-            if show_bbox and hasattr(catalog_object, "size") and catalog_object.size:
+            crosshair_style = (
+                config_object.get_option("obj_chart_crosshair_style")
+                if config_object
+                else "simple"
+            )
+            if (
+                show_bbox
+                and crosshair_style != "shape"
+                and hasattr(catalog_object, "size")
+                and catalog_object.size
+            ):
                 draw_size_overlay(
                     ri_draw,
                     catalog_object,
