@@ -61,6 +61,7 @@ logger = logging.getLogger("PiFinder.polar_alignment")
 MIN_SWEEP_DEG = 3.0
 
 _SKYFIELD_TS = _skyfield_load.timescale(builtin=True)  # bundled, no internet
+_SKYFIELD_EPH = _skyfield_load('de421.bsp')       # PiFinder already ships this file
 
 
 # ── Low-level rotation helpers ────────────────────────────────────────────────
@@ -244,6 +245,16 @@ def correction_target(axis_ra, axis_dec, last_solve, observation_jyear=None):
 
     # Rotation Q that maps axis -> NCP [0,0,1]
     ncp = np.array([0.0, 0.0, 1.0])
+    if observation_jyear is not None:
+        # Blend geometric pole (JNOW but without correction for annual aberration) ->
+        # apparent pole (place where the geometric JNOW pole appears in the sky)
+        # by cos(theta), theta = sweep cone angle.
+        # Near-pole sweeps need the apparent pole, great-circle sweeps
+        # the geometric one; the blend is exact to first order in v/c.
+        v_e = _SKYFIELD_EPH['earth'].at(_SKYFIELD_TS.J(observation_jyear)).velocity.km_per_s
+        cos_theta = np.dot(axis, _boresight_vec(ra_ls, dec_ls))   # SIGNED
+        ncp = ncp - cos_theta * (P @ v_e) / 299792.458
+        ncp = ncp / np.linalg.norm(ncp)
     cos_angle = np.clip(np.dot(axis, ncp), -1.0, 1.0)
     if abs(cos_angle - 1.0) < 1e-12:
         Q = np.eye(3)
