@@ -348,12 +348,14 @@ class TestCorrectionTarget:
     def test_roll_survives_precession_round_trip(self):
         # With the axis already on the JNOW pole (axis_ra/axis_dec are JNOW
         # coordinates) the correction (in solar reference) is identity,
-        # so the J2000 input must come back almost unchanged — including roll,
-        # which is converted through the full precession matrix.
+        # so the J2000 input must come back almost unchanged
 
         # correction_target now corrects the J2000 target for annual aberration,
-        # (solar->earth reference frame) which can wiggle it 20",
-        # so we need to allow for 30" separation
+        # (solar->earth reference frame) which can wiggle Ra and Dec coordinates 20",
+        # so we need to allow for 30" separation.
+     
+        # Note: the annual aberration correction can *severely* change
+        # roll very close to the pole, it will stay under 20" with Dec < 45°
         
         ra_t, dec_t, roll_t = correction_target(
             0.0, 90.0, (180.0, 30.0, 45.0), observation_jyear=2026.44
@@ -365,7 +367,7 @@ class TestCorrectionTarget:
             * 3600
         )
         assert sep_arcsec < 30.0
-        assert roll_t == pytest.approx(45.0, abs=30.0/3600)
+        assert roll_t == pytest.approx(45.0, abs=20.0/3600)
 
     def test_scope_at_axis_sh_lands_on_scp(self):
         # SH mirror of test_scope_at_axis_lands_on_pole: the scope points at
