@@ -46,7 +46,6 @@ import logging
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize
-from skyfield.api import load as _skyfield_load
 from skyfield.framelib import (
     true_equator_and_equinox_of_date as _SKYFIELD_TETE_FRAME,
 )
@@ -60,8 +59,14 @@ logger = logging.getLogger("PiFinder.polar_alignment")
 # the caller can report it to the user and ask for more platform rotation.
 MIN_SWEEP_DEG = 3.0
 
-_SKYFIELD_TS = _skyfield_load.timescale(builtin=True)  # bundled, no internet
-_SKYFIELD_EPH = _skyfield_load('de421.bsp')       # PiFinder already ships this file
+from skyfield.api import Loader as _skyfield_Loader
+from pathlib import Path as pathlib_Path
+_SCRIPT_DIR = pathlib_Path(__file__).resolve().parent
+_ASTRODATA_PATH = str((_SCRIPT_DIR / '..' / '..' / 'astro_data').resolve())
+print(f"Astro data path: {_ASTRODATA_PATH}")
+_SKYFIELD_LOADER = _skyfield_Loader(_ASTRODATA_PATH, expire=False) # try to get it locally
+_SKYFIELD_EPH = _SKYFIELD_LOADER('de421.bsp')       # PiFinder already ships this file
+_SKYFIELD_TS = _SKYFIELD_LOADER.timescale(builtin=True)  # bundled, no internet
 
 
 # ── Low-level rotation helpers ────────────────────────────────────────────────
