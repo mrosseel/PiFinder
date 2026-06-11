@@ -330,11 +330,11 @@ class TestCorrectionTarget:
         _, _, _, ax_ra, ax_dec, _ = get_platform_adjustments(
             [(ra_pt, dec_pt, 0.0, 0), (ra_pt, dec_pt, 14.0, 0)], LAT_NH, LST
         )
-        _, dec_t, _ = correction_target(ax_ra, ax_dec, (ra_pt, dec_pt, 14.0))
+        _, dec_t, _ = correction_target(ax_ra, ax_dec, (ra_pt, dec_pt, 14.0), LAT_NH, LST)
         assert dec_t == pytest.approx(90.0, abs=1e-4)
 
     def test_aligned_axis_is_identity(self):
-        ra_t, dec_t, roll_t = correction_target(0.0, 90.0, (180.0, 30.0, 5.0))
+        ra_t, dec_t, roll_t = correction_target(0.0, 90.0, (180.0, 30.0, 5.0), LAT_NH, LST)
         assert ra_t == pytest.approx(180.0, abs=1e-9)
         assert dec_t == pytest.approx(30.0, abs=1e-9)
         assert roll_t == pytest.approx(5.0, abs=1e-9)
@@ -342,7 +342,7 @@ class TestCorrectionTarget:
     def test_antipodal_axis(self):
         # Axis pointing exactly at the SCP; the correction rotation must map
         # it to the NCP, carrying the boresight from dec=-30 to dec=+30.
-        _, dec_t, _ = correction_target(0.0, -90.0, (180.0, -30.0, 0.0))
+        _, dec_t, _ = correction_target(0.0, -90.0, (180.0, -30.0, 0.0), LAT_NH, LST)
         assert dec_t == pytest.approx(30.0, abs=1e-6)
 
     def test_roll_survives_precession_round_trip(self):
@@ -358,7 +358,7 @@ class TestCorrectionTarget:
         # roll very close to the pole, it will stay under 20" with Dec < 45°
         
         ra_t, dec_t, roll_t = correction_target(
-            0.0, 90.0, (180.0, 30.0, 45.0), observation_jyear=2026.44
+            0.0, 90.0, (180.0, 30.0, 45.0), LAT_NH, LST, observation_jyear=2026.44
         )
         sep_arcsec = (
             np.degrees(np.arccos(np.clip(np.dot(_axis_vec(ra_t, dec_t),
@@ -380,7 +380,7 @@ class TestCorrectionTarget:
         _, _, _, ax_ra, ax_dec, _ = get_platform_adjustments(
             [(ra_pt, dec_pt, 0.0, 0), (ra_pt, dec_pt, 14.0, 0)], LAT_SH, LST
         )
-        _, dec_t, _ = correction_target(ax_ra, ax_dec, (ra_pt, dec_pt, 14.0))
+        _, dec_t, _ = correction_target(ax_ra, ax_dec, (ra_pt, dec_pt, 14.0), LAT_SH, LST)
         assert dec_t == pytest.approx(-90.0, abs=1e-4)
 
     def test_j2000_pole_axis_target_back_precessed(self):
@@ -397,12 +397,12 @@ class TestCorrectionTarget:
 
         _, _, _, ax_ra, ax_dec, _ = get_platform_adjustments(
             [(0.0, 90.0, 0.0, 0), (0.0, 90.0, 14.0, 0)],
-            51.2,
-            0.0,
+            LAT_NH,
+            LST,
             observation_jyear=jyear_c,
         )
         ra_t, dec_t, _ = correction_target(
-            ax_ra, ax_dec, (0.0, 90.0, 14.0), observation_jyear=jyear_c
+            ax_ra, ax_dec, (0.0, 90.0, 14.0), LAT_NH, LST, observation_jyear=jyear_c
         )
         # Ground truth: TETE Dec=90° (JNOW NCP) expressed in ICRS/J2000, recovered through astropy
         # i.e. the JNOW *apparent* pole back-rotated through the precession matrix.
