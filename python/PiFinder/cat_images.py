@@ -55,24 +55,36 @@ def cardinal_label_positions(
 ) -> List[Tuple[str, float, float]]:
     """Top-left pixel positions for the cardinal labels on the FOV ring.
 
-    Always N and E: one letter per axis pins down all four directions
-    plus the mirror state, and a fixed pair cannot swap identity when
-    the solved roll jitters between frames. Positions are clamped clear
-    of the titlebar and footer text (drawn later, full brightness) so
-    both letters stay visible at any orientation.
+    One label per axis pins down all four directions plus the mirror
+    state. N and E are preferred so the letters stay put when the
+    solved roll jitters; the opposite cardinal is used only when it
+    sits at least one letter-height closer to its true ring position
+    (i.e. the preferred one would be clamped well away from its spot).
+    Positions are clamped clear of the titlebar and footer text (drawn
+    later, full brightness) so both letters stay visible at any
+    orientation.
     """
     (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
     cx = cy = fov_res / 2
     r_label = fov_res / 2 - 2
     top_limit = titlebar_height + font_height
     bottom_limit = fov_res - font_height * 2.2
-    positions = []
-    for label, dx, dy in (("N", nx, ny), ("E", ex, ey)):
+
+    def place(dx: float, dy: float) -> Tuple[float, float, float]:
         lx = cx + dx * r_label - font_width / 2
         ly = cy + dy * r_label - font_height / 2
-        lx = max(0, min(lx, fov_res - font_width))
-        ly = max(top_limit, min(ly, bottom_limit))
-        positions.append((label, lx, ly))
+        clamped_x = max(0.0, min(lx, fov_res - font_width))
+        clamped_y = max(top_limit, min(ly, bottom_limit))
+        displacement = abs(lx - clamped_x) + abs(ly - clamped_y)
+        return clamped_x, clamped_y, displacement
+
+    positions = []
+    for preferred, opposite, dx, dy in (("N", "S", nx, ny), ("E", "W", ex, ey)):
+        label, (x, y, displacement) = preferred, place(dx, dy)
+        opp_x, opp_y, opp_displacement = place(-dx, -dy)
+        if displacement - opp_displacement > font_height:
+            label, x, y = opposite, opp_x, opp_y
+        positions.append((label, x, y))
     return positions
 
 

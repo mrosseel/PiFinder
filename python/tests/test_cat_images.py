@@ -1,4 +1,6 @@
 import math
+import random
+
 import pytest
 from PiFinder.cat_images import (
     cardinal_label_positions,
@@ -318,11 +320,51 @@ class TestCardinalLabelPositions:
             image_rotate, fx, fy, FOV_RES, TITLEBAR_H, FONT_W, FONT_H
         )
 
-    def test_always_n_and_e(self):
-        """Fixed letters: identity must not depend on orientation."""
+    def test_one_label_per_axis(self):
+        """Always one of N/S plus one of E/W — never two from one axis."""
         for image_rotate, fx, fy in label_sweep():
             labels = [p[0] for p in self.positions(image_rotate, fx, fy)]
-            assert labels == ["N", "E"]
+            assert labels[0] in ("N", "S")
+            assert labels[1] in ("E", "W")
+
+    def test_prefers_n_and_e_when_unclamped(self):
+        """When no clamping is in play the preferred letters are used."""
+        # image_rotate=135: N and E both point into the lower half,
+        # inside the allowed band, so neither gets displaced
+        labels = [p[0] for p in self.positions(135, 1, 1)]
+        assert labels == ["N", "E"]
+
+    def test_switches_when_preferred_is_clamped_far_off(self):
+        """N pointing straight into the titlebar gets swapped for S,
+        which sits (nearly) on its true ring position."""
+        # image_rotate=360 → N points straight up, S straight down
+        labels = [p[0] for p in self.positions(360, 1, 1)]
+        assert labels[0] == "S"
+
+    def test_monte_carlo_stable_under_roll_jitter(self):
+        """Monte Carlo: across random orientations, solver roll jitter
+        between two renders must never swap a letter in place. A letter
+        swap is only acceptable when the label genuinely moves; the
+        identical-position N/S swap is the bug this rule prevents."""
+        rng = random.Random(42)
+        swaps = 0
+        for _ in range(20000):
+            image_rotate = rng.uniform(0, 360)
+            jitter = rng.uniform(-1.0, 1.0)
+            fx = rng.choice((1, -1))
+            fy = rng.choice((1, -1))
+            base = self.positions(image_rotate, fx, fy)
+            jit = self.positions(image_rotate + jitter, fx, fy)
+            for (a, bx, by), (b, jx, jy) in zip(base, jit):
+                if a != b:
+                    swaps += 1
+                    assert abs(bx - jx) + abs(by - jy) > FONT_H, (
+                        f"in-place letter swap {a}->{b} at "
+                        f"image_rotate={image_rotate:.2f} jitter={jitter:.2f} "
+                        f"fx={fx} fy={fy}"
+                    )
+        # boundary crossings must be rare, not a flicker regime
+        assert swaps < 200
 
     def test_on_screen_and_clear_of_text_bands(self):
         """Labels stay on screen, below the titlebar text and above the
