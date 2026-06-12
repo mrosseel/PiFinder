@@ -321,7 +321,7 @@ class UIObjectDetails(UIModule):
         self.texts["desc"] = self.descTextLayout
 
         solution = self.shared_state.solution()
-        roll = 0
+        roll = None
         if solution and solution.has_pointing():
             roll = solution.pointing.aligned.estimate.Roll
 

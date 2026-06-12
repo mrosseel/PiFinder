@@ -1,6 +1,7 @@
 import math
 import pytest
 from PiFinder.cat_images import (
+    cardinal_label_positions,
     cardinal_vectors,
     size_overlay_points,
     vertex_overlay_points,
@@ -295,3 +296,45 @@ class TestVertexOverlayPoints:
         dy2 = pts2[0][1] - 64
         assert dx2 == pytest.approx(2 * dx1, abs=0.1)
         assert dy2 == pytest.approx(2 * dy1, abs=0.1)
+
+
+# --- cardinal_label_positions ---
+
+# display geometry of the 128px screens (fov_res, titlebar, base font)
+FOV_RES, TITLEBAR_H, FONT_W, FONT_H = 128, 17, 6, 11
+
+
+def label_sweep():
+    """All mirror combos x rolls in 0.5-degree steps."""
+    for fx, fy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        for half_deg in range(720):
+            yield 180 + half_deg / 2, fx, fy
+
+
+@pytest.mark.unit
+class TestCardinalLabelPositions:
+    def positions(self, image_rotate, fx, fy):
+        return cardinal_label_positions(
+            image_rotate, fx, fy, FOV_RES, TITLEBAR_H, FONT_W, FONT_H
+        )
+
+    def test_always_n_and_e(self):
+        """Fixed letters: identity must not depend on orientation."""
+        for image_rotate, fx, fy in label_sweep():
+            labels = [p[0] for p in self.positions(image_rotate, fx, fy)]
+            assert labels == ["N", "E"]
+
+    def test_on_screen_and_clear_of_text_bands(self):
+        """Labels stay on screen, below the titlebar text and above the
+        footer eyepiece text (both drawn later at full brightness)."""
+        footer_top = FOV_RES - FONT_H * 1.1
+        for image_rotate, fx, fy in label_sweep():
+            for _, x, y in self.positions(image_rotate, fx, fy):
+                assert 0 <= x <= FOV_RES - FONT_W
+                assert y >= TITLEBAR_H + FONT_H
+                assert y + FONT_H <= footer_top
+
+    def test_labels_never_overlap(self):
+        for image_rotate, fx, fy in label_sweep():
+            (_, x1, y1), (_, x2, y2) = self.positions(image_rotate, fx, fy)
+            assert abs(x1 - x2) >= FONT_W + 2 or abs(y1 - y2) >= FONT_H + 2

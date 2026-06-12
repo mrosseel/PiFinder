@@ -44,6 +44,38 @@ def cardinal_vectors(
     return n, e
 
 
+def cardinal_label_positions(
+    image_rotate: float,
+    fx: int,
+    fy: int,
+    fov_res: int,
+    titlebar_height: int,
+    font_width: int,
+    font_height: int,
+) -> List[Tuple[str, float, float]]:
+    """Top-left pixel positions for the cardinal labels on the FOV ring.
+
+    Always N and E: one letter per axis pins down all four directions
+    plus the mirror state, and a fixed pair cannot swap identity when
+    the solved roll jitters between frames. Positions are clamped clear
+    of the titlebar and footer text (drawn later, full brightness) so
+    both letters stay visible at any orientation.
+    """
+    (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
+    cx = cy = fov_res / 2
+    r_label = fov_res / 2 - 2
+    top_limit = titlebar_height + font_height
+    bottom_limit = fov_res - font_height * 2.2
+    positions = []
+    for label, dx, dy in (("N", nx, ny), ("E", ex, ey)):
+        lx = cx + dx * r_label - font_width / 2
+        ly = cy + dy * r_label - font_height / 2
+        lx = max(0, min(lx, fov_res - font_width))
+        ly = max(top_limit, min(ly, bottom_limit))
+        positions.append((label, lx, ly))
+    return positions
+
+
 def size_overlay_points(
     extents: List[float],
     pa: float,
@@ -260,28 +292,21 @@ def get_display_image(
             fx = -1 if flop_image else 1
             fy = -1 if flip_image else 1
 
-            # NSEW cardinal labels — show two: one of N/S and one of E/W
-            # (one letter per axis pins down all four directions and the
-            # mirror state; two from the same axis would leave the other
-            # axis ambiguous). Take the leftmost of each pair, out at the
-            # FOV ring, clamped clear of the titlebar and footer text
-            # (drawn later, full brightness) so both stay visible.
-            if show_nsew:
-                (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
+            # cardinal labels claim a definite sky orientation, so skip
+            # them while there is no plate solve (roll unknown) rather
+            # than render them for the fallback orientation
+            if show_nsew and roll is not None:
                 label_font = display_class.fonts.base
                 label_color = display_class.colors.get(128)
-                r_label = display_class.fov_res / 2 - 2
-                top_limit = display_class.titlebar_height + label_font.height
-                bottom_limit = display_class.fov_res - label_font.height * 2.2
-                chosen = (
-                    min([("N", nx, ny), ("S", -nx, -ny)], key=lambda c: c[1]),
-                    min([("E", ex, ey), ("W", -ex, -ey)], key=lambda c: c[1]),
-                )
-                for label, dx, dy in chosen:
-                    lx = cx + dx * r_label - label_font.width / 2
-                    ly = cy + dy * r_label - label_font.height / 2
-                    lx = max(0, min(lx, display_class.fov_res - label_font.width))
-                    ly = max(top_limit, min(ly, bottom_limit))
+                for label, lx, ly in cardinal_label_positions(
+                    image_rotate,
+                    fx,
+                    fy,
+                    display_class.fov_res,
+                    display_class.titlebar_height,
+                    label_font.width,
+                    label_font.height,
+                ):
                     ui_utils.shadow_outline_text(
                         ri_draw,
                         (lx, ly),
