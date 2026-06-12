@@ -260,25 +260,24 @@ def get_display_image(
             fx = -1 if flop_image else 1
             fy = -1 if flip_image else 1
 
-            # NSEW cardinal labels — show the leftmost and rightmost of the
-            # four cardinals, out at the FOV ring. Clamped clear of the
-            # titlebar and footer text (drawn later, full brightness) so
-            # both letters always stay visible.
+            # NSEW cardinal labels — show two: one of N/S and one of E/W
+            # (one letter per axis pins down all four directions and the
+            # mirror state; two from the same axis would leave the other
+            # axis ambiguous). Take the leftmost of each pair, out at the
+            # FOV ring, clamped clear of the titlebar and footer text
+            # (drawn later, full brightness) so both stay visible.
             if show_nsew:
                 (nx, ny), (ex, ey) = cardinal_vectors(image_rotate, fx, fy)
                 label_font = display_class.fonts.base
                 label_color = display_class.colors.get(128)
                 r_label = display_class.fov_res / 2 - 2
                 top_limit = display_class.titlebar_height + label_font.height
-                bottom_limit = display_class.fov_res - label_font.height * 2
-                candidates = [
-                    ("N", nx, ny),
-                    ("S", -nx, -ny),
-                    ("E", ex, ey),
-                    ("W", -ex, -ey),
-                ]
-                by_x = sorted(candidates, key=lambda c: c[1])
-                for label, dx, dy in (by_x[0], by_x[-1]):
+                bottom_limit = display_class.fov_res - label_font.height * 2.2
+                chosen = (
+                    min([("N", nx, ny), ("S", -nx, -ny)], key=lambda c: c[1]),
+                    min([("E", ex, ey), ("W", -ex, -ey)], key=lambda c: c[1]),
+                )
+                for label, dx, dy in chosen:
                     lx = cx + dx * r_label - label_font.width / 2
                     ly = cy + dy * r_label - label_font.height / 2
                     lx = max(0, min(lx, display_class.fov_res - label_font.width))
