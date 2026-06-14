@@ -8,8 +8,8 @@ from PiFinder.ui.software import UISoftware
 from PiFinder.ui.gpsstatus import UIGPSStatus
 from PiFinder.ui.chart import UIChart
 from PiFinder.ui.align import UIAlign
-from PiFinder.ui.polar_align import UIPolarAlign
 from PiFinder.ui.align_daytime import UIAlignDaytime
+from PiFinder.ui.polar_align import UIPolarAlign
 from PiFinder.ui.textentry import UITextEntry
 from PiFinder.ui.preview import UIPreview
 from PiFinder.ui.sqm import UISQM
@@ -59,11 +59,6 @@ pifinder_menu = {
                     "class": UIAlignDaytime,
                     "stateful": True,
                     "preload": True,
-                },
-                {
-                    "name": _("Polar Align"),
-                    "class": UIPolarAlign,
-                    "stateful": True,
                 },
                 {
                     "name": _("GPS Status"),
@@ -1177,6 +1172,11 @@ pifinder_menu = {
                     "select": "Single",
                     "items": [
                         {"name": "SQM", "class": UISQM},
+                        {
+                            "name": _("Polar Align"),
+                            "class": UIPolarAlign,
+                            "stateful": True,
+                        },
                         {
                             "name": _("AE Algo"),
                             "class": UITextMenu,

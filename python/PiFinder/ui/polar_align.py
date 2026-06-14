@@ -49,6 +49,7 @@ class PAState(Enum):
     AIM = "aim"  # Waiting for user to confirm a capture
     WAIT_SOLVE = "wait_solve"  # Waiting for a fresh camera solve
     ADJUST = "adjust"  # Live target display for the alt/az knobs
+    STATS = "stats"  # Read-only detail view of the last result
 
 
 class UIPolarAlign(UIModule):
@@ -77,13 +78,21 @@ class UIPolarAlign(UIModule):
         self.capture_request_time = 0.0
         self.result: Optional[dict] = None
         self.target_altaz: Optional[Tuple[float, float]] = None
+        # State to return to when leaving the STATS detail view.
+        self._stats_return = PAState.ADJUST
+        # RA/Dec-only axis fit, ignoring camera roll (e.g. after a camera
+        # flop). A session-level preference toggled from the marking menu;
+        # only affects three-point solves.
+        self.ignore_roll = False
 
-        # Marking menu definition
+        # Marking menu (long-press square): advanced actions. The roll
+        # option's label tracks the current state (see _update_roll_label).
         self.marking_menu = MarkingMenu(
-            left=MarkingMenuOption(),
-            down=MarkingMenuOption(),
-            right=MarkingMenuOption(),
+            left=MarkingMenuOption(label=_("REDO PT"), callback=self.mm_redo_point),
+            down=MarkingMenuOption(callback=self.mm_toggle_roll),
+            right=MarkingMenuOption(label=_("STATS"), callback=self.mm_stats),
         )
+        self._update_roll_label()
 
     def active(self):
         self.update(force=True)
@@ -141,39 +150,50 @@ class UIPolarAlign(UIModule):
             else:
                 self.state = PAState.AIM
 
-    def _compute(self):
+    def _gps_ready(self) -> bool:
+        """True when location/time are available to compute a result."""
+        if not self.shared_state.altaz_ready():
+            return False
+        return self._solve_datetime(self.solves[-1][3]) is not None
+
+    def _recompute(self) -> bool:
         """
-        Run the polar alignment calculation on the captured solves and
-        build the fixed ground-frame target for the adjustment phase.
+        Run the polar alignment calculation on the captured solves and build
+        the fixed ground-frame target for the adjustment phase. Sets
+        self.result and self.target_altaz and returns True on success;
+        returns False (leaving them unchanged) if GPS isn't ready or the
+        rotation is too small to determine an axis. Silent and
+        non-destructive: it does not message, change state, or mutate
+        self.solves -- callers decide what to do on each failure.
         """
+        if not self._gps_ready():
+            return False
         location = self.shared_state.location()
         dt_last = self._solve_datetime(self.solves[-1][3])
-        if not self.shared_state.altaz_ready() or dt_last is None:
-            self.message(_("Need GPS lock"), 2)
-            self.state = PAState.AIM
-            return
 
         calc_utils.sf_utils.set_location(location.lat, location.lon, location.altitude)
-        lst_deg = calc_utils.sf_utils.get_lst_hrs(dt_last) * 15.0 # 15 = 360°/24h
+        lst_deg = calc_utils.sf_utils.get_lst_hrs(dt_last) * 15.0  # 15 = 360°/24h
         t_last = calc_utils.sf_utils.ts.from_datetime(dt_last)
         jyear = 2000.0 + (t_last.tt - 2451545.0) / 365.25
 
         dAlt, dAz, sweep, axis_ra, axis_dec, fit_quality = get_platform_adjustments(
-            self.solves, location.lat, lst_deg, observation_jyear=jyear
+            self.solves,
+            location.lat,
+            lst_deg,
+            ignore_roll=self.ignore_roll,
+            observation_jyear=jyear,
         )
 
         if math.isnan(axis_ra):
-            # Not enough rotation between solves: drop the last point so
-            # the user can rotate further and capture it again.
-            self.solves.pop()
-            self.message(_("Rotate more"), 2)
-            self.state = PAState.AIM
-            return
+            return False
 
         ra_target, dec_target, _roll_target = correction_target(
-            axis_ra, axis_dec, self.solves[-1][:3],
-            location.lat, lst_deg,
-            observation_jyear=jyear
+            axis_ra,
+            axis_dec,
+            self.solves[-1][:3],
+            location.lat,
+            lst_deg,
+            observation_jyear=jyear,
         )
 
         # The correction target as a fixed ground direction at the epoch
@@ -188,10 +208,31 @@ class UIPolarAlign(UIModule):
             "dAlt": dAlt,
             "dAz": dAz,
             "sweep": sweep,
+            "axis_ra": axis_ra,
+            "axis_dec": axis_dec,
             "fit_quality": fit_quality,
             "n_points": len(self.solves),
+            "ignore_roll": self.ignore_roll,
         }
-        self.state = PAState.ADJUST
+        return True
+
+    def _compute(self):
+        """
+        Capture-flow compute: on success move to the live adjustment display;
+        if the rotation is too small, drop the last point so the user can
+        rotate further and capture it again.
+        """
+        if self._recompute():
+            self.state = PAState.ADJUST
+        elif not self._gps_ready():
+            self.message(_("Need GPS lock"), 2)
+            self.state = PAState.AIM
+        else:
+            # Enough GPS, but too little rotation to determine an axis: drop
+            # the last point so the user can rotate further and recapture.
+            self.solves.pop()
+            self.message(_("Rotate more"), 2)
+            self.state = PAState.AIM
 
     def _current_offset(self) -> Optional[Tuple[float, float, float]]:
         """
@@ -232,6 +273,8 @@ class UIPolarAlign(UIModule):
             self._draw_wait_solve()
         elif self.state == PAState.ADJUST:
             self._draw_adjust()
+        elif self.state == PAState.STATS:
+            self._draw_stats()
 
         return self.screen_update()
 
@@ -349,16 +392,25 @@ class UIPolarAlign(UIModule):
         )
         self._draw_hints(_(f"{self._MINUS_} BACK"))
 
+    def _fit_verdict(self, fit) -> str:
+        """Plain-language fit-quality assessment, or "" when unavailable
+        (two-solve has no residual). Shared by the adjust and stats screens."""
+        if math.isnan(fit):
+            return ""
+        if fit < 3:
+            return _("ok")
+        if fit < 10:
+            return _("mid")
+        return _("bad")
+
     def _draw_adjust(self):
         y = self.display_class.titlebar_height + 4
         if self.result is not None:
             info = f"{self.result['n_points']}" + _("pt")
             info += f" {abs(self.result['sweep']):.0f}°"
-            fit_quality = self.result["fit_quality"]
-            if not math.isnan(fit_quality):
-                info += " " + _("fit") + f" {fit_quality:.1f}"
-                if fit_quality > 3.0:
-                    info += "!"
+            verdict = self._fit_verdict(self.result["fit_quality"])
+            if verdict:
+                info += " " + verdict
             self.draw.text(
                 (10, y),
                 info,
@@ -388,8 +440,50 @@ class UIPolarAlign(UIModule):
         brightness = 255 if age < SOLVE_FRESH_SECS else 128
         draw_pointing_instructions(self, point_az, point_alt, brightness)
 
+    def _draw_stats(self):
+        """Read-only detail view of the last computed result."""
+        y = self.display_class.titlebar_height + 4
+        r = self.result
+        if r is None:
+            self._draw_lines(y, [_("No result yet")])
+            # TRANSLATORS: hint bar; {icon} is the SQUARE button glyph
+            self._draw_hints(_("{icon} BACK").format(icon=self._SQUARE_))
+            return
+
+        # Fit method only applies to three-point solves; for two points it's
+        # the basic two-solve estimate, so omit the mode label there.
+        mode = ""
+        if r["n_points"] >= 3:
+            mode = _("RA/Dec") if r["ignore_roll"] else _("3-axis")
+        fit = r["fit_quality"]
+        fit_txt = "--" if math.isnan(fit) else f"{fit:.1f} {self._fit_verdict(fit)}"
+
+        count = f"{r['n_points']}" + _("pt") + f" {abs(r['sweep']):.0f}°"
+        lines = [
+            count + (f"  {mode}" if mode else ""),
+            _("Fit") + f" {fit_txt}",
+            _("Alt") + f" {r['dAlt']:+.2f}° {r['dAlt'] * 60:+.0f}'",
+            _("Az") + f"  {r['dAz']:+.2f}° {r['dAz'] * 60:+.0f}'",
+            _("Axis") + f" {r['axis_ra']:.1f} {r['axis_dec']:+.1f}",
+        ]
+        y = self._draw_lines(y, lines)
+
+        # Each point's capture time in seconds relative to the first (first =
+        # 0); stable between frames and shows how the captures are spread out.
+        ts = sorted(s[3] for s in self.solves)
+        if ts:
+            t0 = ts[0]
+            times = "/".join(f"{t - t0:.0f}" for t in ts)
+            self._draw_lines(y + 2, [_("time") + f" {times} " + _("sec")], fill=128)
+
+        # TRANSLATORS: hint bar; {icon} is the SQUARE button glyph
+        self._draw_hints(_("{icon} BACK").format(icon=self._SQUARE_))
+
     def key_square(self):
-        if self.state == PAState.INTRO:
+        if self.state == PAState.STATS:
+            # Back to wherever stats was opened from.
+            self.state = self._stats_return
+        elif self.state == PAState.INTRO:
             self.state = PAState.AIM
         elif self.state == PAState.AIM:
             self.capture_request_time = time.time()
@@ -400,7 +494,10 @@ class UIPolarAlign(UIModule):
         self.update(force=True)
 
     def key_minus(self):
-        if self.state == PAState.WAIT_SOLVE:
+        if self.state == PAState.STATS:
+            # Back to wherever stats was opened from, keep the result.
+            self.state = self._stats_return
+        elif self.state == PAState.WAIT_SOLVE:
             # Abort just this capture, keep earlier points
             self.state = PAState.AIM
         elif self.state != PAState.INTRO:
@@ -412,3 +509,55 @@ class UIPolarAlign(UIModule):
         if number == 0 and self.state == PAState.AIM and len(self.solves) >= 2:
             self._compute()
             self.update(force=True)
+
+    # ── Marking-menu actions ──────────────────────────────────────────────────
+
+    def mm_stats(self, _marking_menu, _menu_item) -> bool:
+        """
+        Show the read-only detail view. With two or more points captured but
+        no result yet (still aiming), compute one on demand so stats is
+        available without first leaving the capture flow. A single point
+        carries no axis information, so nothing can be shown.
+        """
+        if self.result is None and len(self.solves) >= 2:
+            self._recompute()
+        if self.result is None:
+            # Explain why there's nothing to show, matching the capture flow.
+            if len(self.solves) < 2:
+                self.message(_("Need 2 points"), 2)
+            elif not self._gps_ready():
+                self.message(_("Need GPS lock"), 2)
+            else:
+                self.message(_("Rotate more"), 2)
+            return True
+        if self.state != PAState.STATS:
+            self._stats_return = self.state
+        self.state = PAState.STATS
+        return True
+
+    def _update_roll_label(self):
+        """Roll option shows the current state: on = roll used in the fit."""
+        self.marking_menu.down.label = (
+            _("Roll Off") if self.ignore_roll else _("Roll On")
+        )
+
+    def mm_toggle_roll(self, _marking_menu, _menu_item) -> bool:
+        """Toggle the RA/Dec-only (ignore camera roll) fit and recompute."""
+        self.ignore_roll = not self.ignore_roll
+        self._update_roll_label()
+        self.message(_("Roll Off") if self.ignore_roll else _("Roll On"), 1)
+        if self.result is not None and len(self.solves) >= 2:
+            self._compute()
+        return True
+
+    def mm_redo_point(self, _marking_menu, _menu_item) -> bool:
+        """Drop just the last captured point and re-aim it."""
+        if not self.solves:
+            self.message(_("No points"), 1)
+            return True
+        self.solves.pop()
+        self.result = None
+        self.target_altaz = None
+        self.state = PAState.AIM
+        self.message(_("Dropped point"), 1)
+        return True
