@@ -17,6 +17,7 @@ from PiFinder.db.observations_db import ObservationsDatabase
 from PiFinder.composite_object import CompositeObject, MagnitudeObject, SizeObject
 from PiFinder.utils import Timer
 from PiFinder.config import Config
+from PiFinder.obj_types import OBJ_TYPES
 from PiFinder.catalog_base import (
     CatalogState,
     CatalogStatus,
@@ -122,7 +123,11 @@ class CatalogFilter:
         Loads filter values from configuration object
         """
         self._magnitude = config_object.get_option("filter.magnitude")
-        self._object_types = config_object.get_option("filter.object_types", [])
+        # Default to every known type (i.e. no type filtering) when unset, drawn
+        # from the single OBJ_TYPES source rather than a hardcoded list.
+        self._object_types = config_object.get_option(
+            "filter.object_types", list(OBJ_TYPES)
+        )
         self._altitude = config_object.get_option("filter.altitude", -1)
         self._observed = config_object.get_option("filter.observed", "Any")
         self._constellations = config_object.get_option("filter.constellations", [])

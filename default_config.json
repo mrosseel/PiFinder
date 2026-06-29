@@ -31,23 +31,6 @@
         "CM",
         "RDS"
     ],
-    "filter.object_types": [
-        "Gx",
-        "OC",
-        "Gb",
-        "Nb",
-        "DN",
-        "PN",
-        "C+N",
-        "Ast",
-        "Kt",
-        "***",
-        "D*",
-        "*",
-        "?",
-        "Pla",
-        "CM"
-    ],
     "filter.constellations": [
         "And",
         "Ant",
