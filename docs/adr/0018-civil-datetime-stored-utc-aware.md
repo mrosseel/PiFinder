@@ -2,7 +2,7 @@
 
 `shared_state` carries two unrelated kinds of "time": the **measurement epoch** (a `time.time()` wall clock used for "how old is this fix?" — `estimate_time`, IMU `timestamp`, see [ADR-0013](./0013-pointing-estimate-timing.md)) and the **civil datetime** (the calendar date + clock used as the astronomical epoch that turns RA/Dec into Alt/Az and drives planet/comet ephemerides). This ADR fixes the contract for the second: it is always stored as a timezone-aware UTC `datetime`, normalised at the `set_datetime()` boundary, and read through the explicit `utc_datetime()` / `local_datetime()` accessors.
 
-**Naive vs aware** (Python `datetime`): a **naive** datetime has no zone (`tzinfo is None`, `utcoffset()` is `None`) — it reads `2024-06-28 11:00:00` with no statement of *which* 11:00, so it names no absolute instant. `datetime.now()` and `datetime.strptime(...)` return naive values. An **aware** datetime carries a zone/offset — `2024-06-28 11:00:00+00:00` (UTC) or `…13:00:00+02:00` (Brussels in June) — which pins it to one absolute instant; `13:00+02:00` and `11:00+00:00` are the *same* instant. `datetime.now(pytz.utc)` and `tz.localize(naive)` produce aware values.
+**Naive vs aware** (Python `datetime`): a *naive* value carries no zone (`utcoffset()` is `None`), so `2024-06-28 11:00:00` names no absolute instant; an *aware* value carries an offset, so `11:00+00:00` and `13:00+02:00` are the *same* instant. `datetime.now()` / `strptime()` are naive; `datetime.now(UTC)` / `tz.localize(...)` are aware. This ADR keeps the civil datetime aware.
 
 ## Context
 
