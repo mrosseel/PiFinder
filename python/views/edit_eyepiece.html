@@ -26,19 +26,19 @@
     </div>
     <div class="row">
         <div class="input-field col s12">
-            <input value="{{ eyepiece.focal_length_mm }}" id="focal_length_mm" type="number" name="focal_length_mm">
+            <input value="{{ eyepiece.focal_length_mm }}" id="focal_length_mm" type="text" inputmode="decimal" name="focal_length_mm">
             <label for="focal_length_mm">{{ _('Focal Length (in mm)') }}</label>
         </div>
     </div>
     <div class="row">
         <div class="input-field col s12">
-            <input value="{{ eyepiece.afov }}" id="afov" type="number" name="afov">
+            <input value="{{ eyepiece.afov }}" id="afov" type="text" inputmode="decimal" name="afov">
             <label for="afov">{{ _('Apparent Field of View (in °)') }}</label>
         </div>
     </div>
     <div class="row">
         <div class="input-field col s12">
-            <input value="{{ eyepiece.field_stop }}" id="field_stop" type="number" name="field_stop">
+            <input value="{{ eyepiece.field_stop }}" id="field_stop" type="text" inputmode="decimal" name="field_stop">
             <label for="field_stop">{{ _('Field stop (in mm)') }}</label>
         </div>
     </div>

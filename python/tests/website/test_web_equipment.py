@@ -418,6 +418,154 @@ def test_equipment_add_eyepiece_functionality(driver):
 
 
 @pytest.mark.web
+def test_equipment_add_eyepiece_comma_decimal(driver):
+    """A comma-typed decimal must save (comma-decimal browser locale, e.g. Belgium).
+
+    The form fields are ``type="text" inputmode="decimal"`` and the server
+    normalises commas, so typing ``24,5`` must persist as ``24.5`` rather than
+    being blanked or mangled by the old ``type="number"`` input.
+    """
+    test_eyepiece = {
+        "make": "CommaEyepieceMake_AutoTest",
+        "name": "Comma Eyepiece",
+        "focal_length": "24,5",
+        "afov": "68",
+        "field_stop": "27,5",
+    }
+
+    _login_to_equipment(driver)
+
+    add_eyepiece_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (By.XPATH, "//a[contains(text(), 'Add new eyepiece')]")
+        )
+    )
+    add_eyepiece_button.click()
+
+    WebDriverWait(driver, 10).until(
+        lambda d: "/equipment/edit_eyepiece/" in d.current_url
+    )
+
+    _fill_eyepiece_form(driver, test_eyepiece)
+
+    save_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add eyepiece')]",
+            )
+        )
+    )
+    save_button.click()
+
+    eyepieces_table = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "eyepieces-table"))
+    )
+    eyepieces_table = driver.find_element(By.ID, "eyepieces-table")
+
+    # Columns: Make(0), Name(1), Focal Length(2), Apparent FOV(3), Field Stop(4)
+    rows = eyepieces_table.find_elements(By.TAG_NAME, "tr")[1:]
+    test_row_index = None
+    focal_length_text = None
+    field_stop_text = None
+    for i, row in enumerate(rows):
+        cells = row.find_elements(By.TAG_NAME, "td")
+        if len(cells) >= 5 and test_eyepiece["make"] in cells[0].text:
+            test_row_index = i
+            focal_length_text = cells[2].text
+            field_stop_text = cells[4].text
+            break
+
+    assert test_row_index is not None, "Comma-decimal eyepiece not found in table"
+    # The comma must have been accepted and normalised to a period.
+    assert (
+        focal_length_text == "24.5"
+    ), f"Focal length saved as '{focal_length_text}', expected '24.5'"
+    assert (
+        field_stop_text == "27.5"
+    ), f"Field stop saved as '{field_stop_text}', expected '27.5'"
+
+    # Clean up.
+    delete_link = rows[test_row_index].find_element(
+        By.CSS_SELECTOR, "a[href*='delete_eyepiece']"
+    )
+    old_table = eyepieces_table
+    delete_link.click()
+    WebDriverWait(driver, 10).until(EC.staleness_of(old_table))
+
+
+@pytest.mark.web
+def test_equipment_add_instrument_comma_decimal(driver):
+    """A comma-typed obstruction percentage must save (comma-decimal locale).
+
+    ``obstruction_perc`` is the instrument form's float field; typing ``12,5``
+    must persist as ``12.5`` after the server normalises the separator.
+    """
+    test_instrument = {
+        "make": "CommaInstrumentMake_AutoTest",
+        "name": "Comma Telescope",
+        "aperture": "200",
+        "focal_length": "1200",
+        "obstruction": "12,5",
+        "mount_type": "equatorial",
+    }
+
+    _login_to_equipment(driver)
+
+    add_instrument_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (By.XPATH, "//a[contains(text(), 'Add new instrument')]")
+        )
+    )
+    add_instrument_button.click()
+
+    WebDriverWait(driver, 10).until(
+        lambda d: "/equipment/edit_instrument/" in d.current_url
+    )
+
+    _fill_instrument_form(driver, test_instrument)
+
+    save_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add instrument')]",
+            )
+        )
+    )
+    save_button.click()
+
+    instruments_table = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "instruments-table"))
+    )
+    instruments_table = driver.find_element(By.ID, "instruments-table")
+
+    # Columns: Make(0), Name(1), Aperture(2), Focal Length(3), Obstruction(4)
+    rows = instruments_table.find_elements(By.TAG_NAME, "tr")[1:]
+    test_row_index = None
+    obstruction_text = None
+    for i, row in enumerate(rows):
+        cells = row.find_elements(By.TAG_NAME, "td")
+        if len(cells) >= 5 and test_instrument["make"] in cells[0].text:
+            test_row_index = i
+            obstruction_text = cells[4].text
+            break
+
+    assert test_row_index is not None, "Comma-decimal instrument not found in table"
+    assert (
+        obstruction_text == "12.5"
+    ), f"Obstruction saved as '{obstruction_text}', expected '12.5'"
+
+    # Clean up.
+    delete_link = rows[test_row_index].find_element(
+        By.CSS_SELECTOR, "a[href*='delete_instrument']"
+    )
+    old_table = instruments_table
+    delete_link.click()
+    WebDriverWait(driver, 10).until(EC.staleness_of(old_table))
+
+
+@pytest.mark.web
 def test_equipment_select_active_instrument(driver):
     """Test selecting an active instrument using radio buttons"""
     # Navigate and login to equipment page

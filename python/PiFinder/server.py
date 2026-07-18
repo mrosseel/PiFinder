@@ -47,6 +47,18 @@ logs_logger = logging.getLogger("Server.Logs")
 SESSION_SECRET = str(uuid.uuid4())
 
 
+def parse_number(value, default="0"):
+    """Parse a numeric form field, accepting comma or period as the decimal
+    separator. Falls back to ``default`` when the field is missing or blank.
+
+    A ``<input type="text" inputmode="decimal">`` submits whatever the user
+    typed, so in a comma-decimal locale the raw value can contain a comma;
+    normalising it here means the server always sees a valid float.
+    """
+    text = value if value not in (None, "") else default
+    return float(str(text).strip().replace(",", "."))
+
+
 def auth_required(func):
     def auth_wrapper(*args, **kwargs):
         # check for and validate session
@@ -712,16 +724,13 @@ class Server:
             try:
                 make = request.form.get("make") or ""
                 name = request.form.get("name") or ""
-                focal_length_str = request.form.get("focal_length_mm") or "0"
-                afov_str = request.form.get("afov") or "0"
-                field_stop_str = request.form.get("field_stop") or "0"
 
                 eyepiece = Eyepiece(
                     make=make,
                     name=name,
-                    focal_length_mm=float(focal_length_str),
-                    afov=int(afov_str),
-                    field_stop=float(field_stop_str),
+                    focal_length_mm=parse_number(request.form.get("focal_length_mm")),
+                    afov=int(parse_number(request.form.get("afov"))),
+                    field_stop=parse_number(request.form.get("field_stop")),
                 )
 
                 if eyepiece_id >= 0:
@@ -794,17 +803,16 @@ class Server:
             try:
                 make = request.form.get("make") or ""
                 name = request.form.get("name") or ""
-                aperture_str = request.form.get("aperture") or "0"
-                focal_length_str = request.form.get("focal_length_mm") or "0"
-                obstruction_str = request.form.get("obstruction_perc") or "0"
                 mount_type = request.form.get("mount_type") or ""
 
                 instrument = Telescope(
                     make=make,
                     name=name,
-                    aperture_mm=int(aperture_str),
-                    focal_length_mm=int(focal_length_str),
-                    obstruction_perc=float(obstruction_str),
+                    aperture_mm=int(parse_number(request.form.get("aperture"))),
+                    focal_length_mm=int(
+                        parse_number(request.form.get("focal_length_mm"))
+                    ),
+                    obstruction_perc=parse_number(request.form.get("obstruction_perc")),
                     mount_type=mount_type,
                     flip_image=bool(request.form.get("flip")),
                     flop_image=bool(request.form.get("flop")),
