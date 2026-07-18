@@ -1,29 +1,40 @@
 """
-Black-level (pedestal) tracking from the sky-vs-exposure relation.
+Black-level (pedestal) tracking from local exposure pairs.
 
 The sensor background is linear in exposure:
 
-    background_per_pixel = bias_offset + (dark_current + sky_rate) * exposure
+    background_per_pixel = pedestal + (dark_current + sky_rate) * exposure
 
-so the intercept of ``background_per_pixel`` against ``exposure`` is the
-electronic pedestal at zero exposure — the sensor's true black level right
-now, no lens cap or dark frame required. The auto-exposure loop naturally
-varies the exposure (around slews and sky-brightness changes), which supplies
-the lever arm for the fit.
+so any two frames taken close together in time — under the same sky,
+whatever that sky is doing on the minutes scale — determine the pedestal as
+the intercept of the line through their (exposure, background) points. The
+estimator collects such **local pairs** (close in time, well separated in
+exposure) and publishes the median of their intercepts.
 
-This matters because the profile ``bias_offset`` is a static constant while
-the real black level wanders ±2 ADU night to night (sensor temperature the
-suspect). That wander is negligible against a bright city background but worth
-0.2–0.4 mag at a dark site, where it must be tracked. Measured on the 2026-07
-archive ramps, the intercept fit recovers each night's pedestal to
-±0.06–0.6 ADU.
+Local pairing is what makes the estimate weather-proof. A single global fit
+over a minutes-long window blends samples taken under different transmissions
+(cloud thickening, twilight) and the blend lands in the intercept as bias
+that no residual-based quality gate can see — a smoothly drifting sky yields
+small residuals around a *wrong* line (observed 2026-07-17: an 8 ADU bias
+accepted at intercept stderr 0.97). Pair intercepts taken at different times
+under a drifting sky instead *disagree with each other*, so the drift shows
+up as spread among the estimates — the published uncertainty is honest by
+construction. Validated on the 2026-07 sweep archive (29 sweeps, 2 sensors,
+6 nights): pair medians stayed within ~1 ADU of the clear-sky ramp consensus
+through cloud and drift that biased global fits by 2-8 ADU, and the pair
+spread ranked sky quality correctly on every sweep.
 
-The fit is only trusted when the sky held still while the samples were taken:
-a drifting sky (twilight, moonrise, cloud) breaks the single-line model and
-inflates the intercept's standard error, which the ``max_intercept_stderr``
-gate rejects. The caller additionally withholds samples taken through cloud
-(``stable=False``). Until a confident fit exists, ``pedestal()`` returns
-``None`` and the caller falls back to the profile constant.
+Pairs need exposure contrast, which auto-exposure rarely provides — a pinned
+1 s night yields no pairs at all, and the estimator honestly returns ``None``
+(callers fall back to the profile constant). The camera process therefore
+injects periodic short-exposure **probe** frames (``profile.probe_exposure_us``,
+chosen on each sensor's linear branch); every frame's radiometer sample
+carries its driver-reported exposure, so probe and transition frames enter
+the window as ordinary valid samples.
+
+An accepted estimate is a lease, not a latch: it expires ``max_age_seconds``
+after the last accepted refit, so one plausible-but-wrong result can never
+rule a session.
 """
 
 import logging
@@ -37,48 +48,50 @@ logger = logging.getLogger("SQM.BlackLevel")
 
 
 class BlackLevelTracker:
-    """Rolling estimate of the sensor pedestal from (exposure, background)."""
+    """Rolling pedestal estimate from local (time-adjacent) exposure pairs."""
 
     def __init__(
         self,
         bias_offset: float,
-        min_samples: int = 12,
         max_samples: int = 60,
-        min_exposure_ratio: float = 1.5,
-        max_intercept_stderr: float = 0.6,
+        pair_max_dt_seconds: float = 10.0,
+        pair_min_exposure_ratio: float = 2.0,
+        min_pairs: int = 8,
+        max_pair_mad: float = 1.0,
         max_offset_deviation: float = 12.0,
         max_age_seconds: float = 900.0,
     ):
         """
         Args:
-            bias_offset: profile pedestal; the fit is rejected if it strays
-                more than ``max_offset_deviation`` from this sanity anchor.
-            min_samples: samples needed before a fit is attempted.
-            max_samples: rolling window of (exposure, background) pairs.
-            min_exposure_ratio: max/min exposure in the window must exceed this
-                — without a lever arm the intercept is an unreliable
-                extrapolation (and its stderr gate would reject it anyway).
-            max_intercept_stderr: reject the fit when the intercept's standard
-                error exceeds this (ADU). A stable sky sits at 0.1–0.6; a
-                drifting sky blows past 1.0.
-            max_offset_deviation: reject a fitted pedestal further than this
-                (ADU) from the profile constant — a guard against a
-                pathological fit driving the pedestal to nonsense.
-            max_age_seconds: an accepted pedestal expires after this long
-                without a fresh accepting refit. Prevents one plausible-but-
-                wrong fit (e.g. accepted through smooth cloud drift, observed
-                2026-07-17) from ruling a whole session; expiry falls back to
+            bias_offset: profile pedestal (ADU); an estimate further than
+                ``max_offset_deviation`` from it is rejected as pathological.
+            max_samples: rolling window of (time, exposure, background) samples.
+            pair_max_dt_seconds: two samples pair only when captured within
+                this many seconds — the sky must not have had time to change
+                between them.
+            pair_min_exposure_ratio: paired exposures must differ by at least
+                this factor; a small separation divides noise by a near-zero
+                exposure difference.
+            min_pairs: pair intercepts needed before an estimate is published.
+            max_pair_mad: reject the estimate when the median absolute
+                deviation of the pair intercepts exceeds this (ADU). Measured
+                on the sweep archive: calm sky 0.3-0.9, drifting/patchy >1.2.
+            max_offset_deviation: sanity band around the profile constant (ADU).
+            max_age_seconds: an accepted estimate expires after this long
+                without a fresh accepting refit; callers then fall back to
                 the profile constant.
         """
         self.bias_offset = bias_offset
-        self.min_samples = min_samples
-        self.min_exposure_ratio = min_exposure_ratio
-        self.max_intercept_stderr = max_intercept_stderr
+        self.pair_max_dt_seconds = pair_max_dt_seconds
+        self.pair_min_exposure_ratio = pair_min_exposure_ratio
+        self.min_pairs = min_pairs
+        self.max_pair_mad = max_pair_mad
         self.max_offset_deviation = max_offset_deviation
         self.max_age_seconds = max_age_seconds
         self._samples: deque = deque(maxlen=max_samples)
         self._pedestal: Optional[float] = None
-        self._stderr: Optional[float] = None
+        self._pair_mad: Optional[float] = None
+        self._n_pairs: int = 0
         self._accepted_at: Optional[float] = None
 
     def add_sample(
@@ -86,15 +99,20 @@ class BlackLevelTracker:
         exposure_sec: float,
         background_per_pixel: float,
         stable: bool = True,
+        captured_at: Optional[float] = None,
     ) -> None:
         """Record one frame's raw (pre-pedestal) background and refit.
 
         Args:
-            exposure_sec: frame exposure.
+            exposure_sec: driver-reported frame exposure (seconds). Requested
+                exposures are not trustworthy: drivers deliver transitional
+                frames at other-than-requested exposures.
             background_per_pixel: median sky background in ADU *before*
-                pedestal subtraction (``details['background_per_pixel']``).
-            stable: False when transmission is changing (cloud) — the sample
-                is dropped so a moving sky cannot corrupt the intercept.
+                pedestal subtraction.
+            stable: False drops the sample (caller-side withhold). Local
+                pairing already makes the fit itself insensitive to sky
+                changes slower than ``pair_max_dt_seconds``.
+            captured_at: sample capture epoch (seconds); defaults to now.
         """
         if (
             not stable
@@ -104,51 +122,56 @@ class BlackLevelTracker:
             or not np.isfinite(background_per_pixel)
         ):
             return
-        self._samples.append((float(exposure_sec), float(background_per_pixel)))
+        t = float(captured_at) if captured_at is not None else time.time()
+        self._samples.append((t, float(exposure_sec), float(background_per_pixel)))
         self._refit()
 
+    def _pair_intercepts(self) -> np.ndarray:
+        """Intercepts of every valid local pair in the window."""
+        samples = sorted(self._samples)
+        intercepts = []
+        n = len(samples)
+        for i in range(n):
+            t1, e1, b1 = samples[i]
+            for j in range(i + 1, n):
+                t2, e2, b2 = samples[j]
+                if t2 - t1 > self.pair_max_dt_seconds:
+                    break
+                lo, hi = (e1, e2) if e1 <= e2 else (e2, e1)
+                if lo <= 0 or hi / lo < self.pair_min_exposure_ratio:
+                    continue
+                intercepts.append(b1 - e1 * (b2 - b1) / (e2 - e1))
+        return np.array(intercepts)
+
     def _refit(self) -> None:
-        if len(self._samples) < self.min_samples:
-            self._pedestal = None
-            self._stderr = None
+        intercepts = self._pair_intercepts()
+        self._n_pairs = len(intercepts)
+        if self._n_pairs < self.min_pairs:
+            return  # keep the leased estimate until it expires
+        pedestal = float(np.median(intercepts))
+        pair_mad = float(np.median(np.abs(intercepts - pedestal)))
+        if pair_mad > self.max_pair_mad:
+            # Pair estimates disagree: the sky changed between pairs or the
+            # short frames sit off the linear branch. Unlike a global-fit
+            # stderr, this spread also exposes smooth drift.
             return
-        exps = np.array([s[0] for s in self._samples], dtype=np.float64)
-        bgs = np.array([s[1] for s in self._samples], dtype=np.float64)
-        if exps.min() <= 0 or exps.max() / exps.min() < self.min_exposure_ratio:
-            return  # no lever arm; keep the prior estimate
-        n = len(exps)
-        xbar = exps.mean()
-        sxx = float(np.sum((exps - xbar) ** 2))
-        if sxx <= 0:
-            return
-        slope, intercept = np.polyfit(exps, bgs, 1)
-        if slope < 0:
-            # Background cannot fall as exposure rises; the samples are not a
-            # clean sky ramp (blend of fields/conditions). Reject.
-            return
-        resid = bgs - (intercept + slope * exps)
-        dof = n - 2
-        s = float(np.sqrt(np.sum(resid**2) / dof)) if dof > 0 else float("inf")
-        stderr = s * float(np.sqrt(1.0 / n + xbar**2 / sxx))
-        if stderr > self.max_intercept_stderr:
-            return  # sky was drifting; keep the prior estimate
-        if abs(intercept - self.bias_offset) > self.max_offset_deviation:
+        if abs(pedestal - self.bias_offset) > self.max_offset_deviation:
             logger.debug(
-                "Black-level fit %.1f rejected: %.1f ADU from profile %.1f",
-                intercept,
-                abs(intercept - self.bias_offset),
+                "Black-level pairs %.1f rejected: %.1f ADU from profile %.1f",
+                pedestal,
+                abs(pedestal - self.bias_offset),
                 self.bias_offset,
             )
             return
-        self._pedestal = float(intercept)
-        self._stderr = stderr
+        self._pedestal = pedestal
+        self._pair_mad = pair_mad
         self._accepted_at = time.monotonic()
 
     def pedestal(self) -> Optional[float]:
-        """Current fitted black level (ADU), or None until a confident fit.
+        """Current pedestal (ADU), or None until/after a confident estimate.
 
-        An accepted fit is a lease, not a latch: unless a fresh fit passes
-        within ``max_age_seconds`` its evidence has aged out of the window
+        An accepted estimate is a lease: unless a fresh refit passes within
+        ``max_age_seconds`` its evidence has aged out of the window
         unreplaced, and callers fall back to the profile constant — the same
         state every session starts in.
         """
@@ -159,18 +182,19 @@ class BlackLevelTracker:
         return self._pedestal
 
     def stderr(self) -> Optional[float]:
-        """Standard error of the current intercept (ADU), or None."""
-        return self._stderr
+        """Spread (MAD, ADU) of the accepted pair intercepts, or None."""
+        return self._pair_mad
 
     def state(self) -> Tuple[Optional[float], Optional[float], int]:
-        """(pedestal, stderr, n_samples) for diagnostics."""
-        return self._pedestal, self._stderr, len(self._samples)
+        """(pedestal, pair MAD, n_samples) for diagnostics."""
+        return self._pedestal, self._pair_mad, len(self._samples)
 
     def dump(self) -> dict:
         """Full JSON-serializable window state for diagnostics/sweeps."""
         return {
             "pedestal": self.pedestal(),
-            "stderr": self._stderr,
+            "pair_mad": self._pair_mad,
+            "n_pairs": self._n_pairs,
             "n_samples": len(self._samples),
             "age_seconds": (
                 time.monotonic() - self._accepted_at
@@ -179,19 +203,22 @@ class BlackLevelTracker:
             ),
             "config": {
                 "bias_offset": self.bias_offset,
-                "min_samples": self.min_samples,
                 "max_samples": self._samples.maxlen,
-                "min_exposure_ratio": self.min_exposure_ratio,
-                "max_intercept_stderr": self.max_intercept_stderr,
+                "pair_max_dt_seconds": self.pair_max_dt_seconds,
+                "pair_min_exposure_ratio": self.pair_min_exposure_ratio,
+                "min_pairs": self.min_pairs,
+                "max_pair_mad": self.max_pair_mad,
                 "max_offset_deviation": self.max_offset_deviation,
                 "max_age_seconds": self.max_age_seconds,
             },
-            "samples_exposure_sec": [s[0] for s in self._samples],
-            "samples_background_per_pixel": [s[1] for s in self._samples],
+            "samples_captured_at": [s[0] for s in self._samples],
+            "samples_exposure_sec": [s[1] for s in self._samples],
+            "samples_background_per_pixel": [s[2] for s in self._samples],
         }
 
     def reset(self) -> None:
         self._samples.clear()
         self._pedestal = None
-        self._stderr = None
+        self._pair_mad = None
+        self._n_pairs = 0
         self._accepted_at = None

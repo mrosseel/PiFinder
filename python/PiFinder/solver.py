@@ -160,6 +160,7 @@ def update_radiometric_sqm(
             float(sample["exposure_sec"]),
             float(sample["background_per_pixel"]),
             stable=not cloudy_now,
+            captured_at=float(sample["captured_at"]),
         )
 
     current_sqm = shared_state.sqm()

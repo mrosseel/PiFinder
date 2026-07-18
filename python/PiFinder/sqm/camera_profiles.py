@@ -57,6 +57,11 @@ class CameraProfile:
     # Read noise in ADU (from 0-second exposures at 20°C)
     # Represents the fundamental noise floor of the sensor electronics
     read_noise_adu: float = 0.0
+    # Shortest exposure (µs) on this sensor's linear response branch, used by
+    # the pedestal probe: short-exposure frames below the linear knee read
+    # high (imx462: +2.9 ADU at 25 ms decaying to 0 at ~300 ms) and would
+    # bias the black-level pair estimator.
+    probe_exposure_us: int = 300_000
 
     # Dark current rate in ADU/second (at 20°C)
     # Thermal electrons generated even without light
@@ -193,6 +198,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         rotation_90=2,  # 180-degree rotation (sensor orientation differs)
         # Noise characteristics
         read_noise_adu=2.5,  # Datasheet: 2.2e⁻ typical → ~2.5 ADU @ 10-bit
+        probe_exposure_us=300_000,  # linear knee unmeasured; conservative until characterized
         dark_current_rate=8.0,  # Datasheet: 3.2 e⁻/p/s @ 25°C → ~8 ADU/s @ 10-bit
         thermal_coeff=0.08,  # Typical for CMOS sensors (no sensor temp available)
         typical_sky_background=21.0,
@@ -226,6 +232,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         rotation_90=0,  # No rotation needed
         # Noise characteristics
         read_noise_adu=3.2,  # Estimated (STARVIS, similar to IMX290)
+        probe_exposure_us=300_000,  # measured: on-line from ~300 ms up
         dark_current_rate=0.05,  # Estimated - needs measurement
         thermal_coeff=0.10,  # Typical for CMOS sensors (no sensor temp available)
         typical_sky_background=21.0,
@@ -260,6 +267,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         rotation_90=0,  # No rotation needed
         # Noise characteristics
         read_noise_adu=3.0,  # Measured: 3.3-3.5e⁻ @ 0dB → ~3 ADU @ 12-bit
+        probe_exposure_us=300_000,  # assumed to share the imx462 clamp behaviour
         dark_current_rate=0.04,  # Estimated - needs measurement
         thermal_coeff=0.10,  # Typical for CMOS sensors (no sensor temp available)
         typical_sky_background=21.0,
@@ -287,6 +295,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         rotation_90=0,  # No rotation needed
         # Noise characteristics
         read_noise_adu=4.0,  # Estimated (IMX477, no published specs)
+        probe_exposure_us=25_000,  # measured: linear from 25 ms down
         dark_current_rate=0.02,  # Estimated - needs measurement
         thermal_coeff=0.09,  # Typical for CMOS sensors (no sensor temp available)
         typical_sky_background=21.0,

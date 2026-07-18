@@ -153,6 +153,9 @@ class CameraInterface:
     # frame decline to start a second, concurrent capture on a camera that is
     # not thread-safe.
     _capture_thread: Optional[threading.Thread] = None
+    # Pedestal probe scheduler state (see _probe_due / _pedestal_probe).
+    _last_probe_at: float = 0.0
+    _slew_since: Optional[float] = None
 
     def set_native_ae(self, enabled: bool) -> bool:
         """Enable/disable the camera's native (driver) auto-exposure.
@@ -174,6 +177,48 @@ class CameraInterface:
 
     def capture_raw_file(self, filename) -> None:
         pass
+
+    def _probe_due(self, now: float, moving: bool) -> bool:
+        """Two-prong pedestal probe schedule.
+
+        Slew prong: after 2 s of sustained motion, solve frames are garbage
+        anyway, so an exposure excursion is free — but short honing nudges
+        near a target never trigger it. Static prong: at most one probe per
+        minute, so pinned-exposure nights still feed the pair estimator.
+        """
+        if moving:
+            if self._slew_since is None:
+                self._slew_since = now
+        else:
+            self._slew_since = None
+        sustained_slew = self._slew_since is not None and now - self._slew_since > 2.0
+        if now - self._last_probe_at < 60.0:
+            return False
+        return sustained_slew or not moving
+
+    def _pedestal_probe(self, num_frames: int = 3) -> None:
+        """Drop short-exposure frames into the stream for the black-level
+        pair estimator.
+
+        Every capture's radiometer sample carries the driver-reported
+        exposure, so the exposure-change transition frames remain valid
+        samples at whatever exposure they actually had — nothing needs to be
+        discarded or verified. The short frames pair with the surrounding
+        normal-exposure frames inside BlackLevelTracker's local-pair window.
+        """
+        probe_us = getattr(getattr(self, "profile", None), "probe_exposure_us", None)
+        if not probe_us or probe_us >= self.exposure_time:
+            return
+        original_exposure = self.exposure_time
+        try:
+            self.set_camera_config(probe_us, self.gain)
+            for _ in range(num_frames):
+                self.capture()
+        except Exception:
+            logger.exception("Pedestal probe failed")
+        finally:
+            self.set_camera_config(original_exposure, self.gain)
+        logger.debug("Pedestal probe at %sµs complete", probe_us)
 
     def _blank_capture(self):
         """
@@ -383,6 +428,12 @@ class CameraInterface:
                         "sensor_temp_c": getattr(self, "last_sensor_temp", None),
                     }
                     shared_state.set_last_image_metadata(image_metadata)
+
+                    if not test_mode_on and self._probe_due(
+                        time.time(), bool(imu_end and imu_end.moving)
+                    ):
+                        self._pedestal_probe()
+                        self._last_probe_at = time.time()
 
                     # Auto-exposure: adjust based on plate solve results
                     # Updates as fast as new solve results arrive (naturally rate-limited)
