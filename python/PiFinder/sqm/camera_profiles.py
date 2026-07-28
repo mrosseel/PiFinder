@@ -53,6 +53,12 @@ class CameraProfile:
     # Number of 90-degree counter-clockwise rotations (for np.rot90)
     rotation_90: int = 0
 
+    # True when the raw stream is a colour filter array mosaic rather than mono.
+    # The mosaic is never debayered; the square-crop pipeline's downscale to
+    # 512x512 smooths it away, so the full-frame pipeline bins 2x2 instead to
+    # keep star profiles free of the RGGB checkerboard.
+    bayer: bool = False
+
     # Noise characteristics for SQM calculations
     # Read noise in ADU (from 0-second exposures at 20°C)
     # Represents the fundamental noise floor of the sensor electronics
@@ -179,6 +185,43 @@ class CameraProfile:
             return self.crop_and_rotate(raw_array)
         return raw_array
 
+    @property
+    def solve_bin_factor(self) -> int:
+        """Pixels per solve-frame pixel along each axis."""
+        return 2 if self.bayer else 1
+
+    @property
+    def solve_frame_size(self) -> Tuple[int, int]:
+        """``(width, height)`` of the solve frame, before any rotation."""
+        raw_width, raw_height = self.raw_size
+        factor = self.solve_bin_factor
+        return (raw_width // factor, raw_height // factor)
+
+    def full_frame(self, raw_array):
+        """Apply rotation to the whole sensor area, with no crop.
+
+        Bayer sensors are binned 2x2 first, which both removes the RGGB
+        modulation and halves the pixel count fed to star detection. The bin is
+        aligned to the mosaic because the full frame starts at the sensor
+        origin.
+
+        Args:
+            raw_array: Raw sensor data (numpy array)
+
+        Returns:
+            Rotated (and for Bayer sensors, binned) array
+        """
+        if self.bayer:
+            height, width = raw_array.shape[:2]
+            trimmed = raw_array[: height - height % 2, : width - width % 2]
+            binned = trimmed.reshape(trimmed.shape[0] // 2, 2, -1, 2)
+            raw_array = binned.mean(axis=(1, 3))
+
+        if self.rotation_90 != 0:
+            raw_array = np.rot90(raw_array, self.rotation_90)
+
+        return raw_array
+
     def __repr__(self) -> str:
         return (
             f"CameraProfile("
@@ -247,6 +290,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         crop_y=(50, 50),  # Crop vertical edges
         crop_x=(470, 470),  # Crop horizontal edges to square
         rotation_90=0,  # No rotation needed
+        bayer=True,  # SRGGB12 mosaic; bin 2x2 for the solve frame
         # Noise characteristics
         read_noise_adu=3.2,  # Estimated (STARVIS, similar to IMX290)
         dark_current_rate=0.05,  # Estimated - needs measurement
@@ -281,6 +325,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         crop_y=(50, 50),  # Crop vertical edges
         crop_x=(470, 470),  # Crop horizontal edges to square
         rotation_90=0,  # No rotation needed
+        bayer=True,  # SRGGB12 mosaic; bin 2x2 for the solve frame
         # Noise characteristics
         read_noise_adu=3.0,  # Measured: 3.3-3.5e⁻ @ 0dB → ~3 ADU @ 12-bit
         dark_current_rate=0.04,  # Estimated - needs measurement
@@ -308,6 +353,7 @@ CAMERA_PROFILES: Dict[str, CameraProfile] = {
         crop_y=(0, 0),  # No vertical crop
         crop_x=(256, 256),  # Crop to square from horizontal rectangle
         rotation_90=0,  # No rotation needed
+        bayer=True,  # SRGGB12 mosaic; bin 2x2 for the solve frame
         # Noise characteristics
         read_noise_adu=4.0,  # Estimated (IMX477, no published specs)
         dark_current_rate=0.02,  # Estimated - needs measurement
