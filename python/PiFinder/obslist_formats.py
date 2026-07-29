@@ -96,8 +96,8 @@ def format_dec_string(dec: float) -> str:
 
 
 def _parse_ra_string(s: str) -> float:
-    """Parse RA from 'Xh Xm X.Xs' format to degrees."""
-    match = re.match(r"(\d+)h\s+(\d+)m\s+([\d.]+)s", s.strip())
+    """Parse RA from 'Xh Xm X.Xs' or 'XhXmX.Xs' format to degrees."""
+    match = re.match(r"(\d+)h\s*(\d+)m\s*([\d.]+)s", s.strip())
     if match:
         return ra_to_deg(
             int(match.group(1)), int(match.group(2)), float(match.group(3))
@@ -144,6 +144,40 @@ def _parse_dms_colon(s: str) -> float:
     if len(parts) == 3:
         return dms_to_dec(sign, int(parts[0]), int(parts[1]), float(parts[2]))
     return 0.0
+
+
+def _parse_ra_flexible(s: str, assume_hours: bool = False) -> float:
+    """Parse a CSV RA cell as decimal degrees, 'HH:MM:SS', or 'Xh Xm Xs'.
+
+    A bare decimal is degrees by default; pass assume_hours=True (signalled by an
+    hours-named header such as ra_h) to read it as hours. The colon and
+    sexagesimal forms are already hours, so the hint only affects a bare decimal.
+    """
+    s = s.strip()
+    if not s:
+        return 0.0
+    try:
+        value = float(s)
+        return value * 15.0 if assume_hours else value
+    except ValueError:
+        pass
+    if ":" in s:
+        return _parse_hms_colon(s)
+    return _parse_ra_string(s)
+
+
+def _parse_dec_flexible(s: str) -> float:
+    """Parse a CSV Dec cell as decimal degrees, '+/-DD:MM:SS', or sexagesimal DMS."""
+    s = s.strip()
+    if not s:
+        return 0.0
+    try:
+        return float(s)  # decimal degrees (-90 to +90)
+    except ValueError:
+        pass
+    if ":" in s:
+        return _parse_dms_colon(s)
+    return _parse_dec_string(s)
 
 
 def _parse_catalog_name(name: str) -> tuple[str, int]:
@@ -309,8 +343,50 @@ def read_skylist(text: str) -> ObsList:
 
 _CSV_HEADER = "Name,RA,Dec,Magnitude,Type,CatalogCode,Sequence"
 
+# CSV from other tools varies in header case, separators, and naming. Map a
+# normalized form (lowercased, alphanumerics only) onto the canonical columns.
+_CSV_HEADER_ALIASES = {
+    "name": "Name",
+    "ra": "RA",
+    "radeg": "RA",
+    "raj2000": "RA",
+    "rah": "RA",
+    "rahr": "RA",
+    "rahrs": "RA",
+    "rahours": "RA",
+    "dec": "Dec",
+    "de": "Dec",
+    "decl": "Dec",
+    "decdeg": "Dec",
+    "decj2000": "Dec",
+    "magnitude": "Magnitude",
+    "mag": "Magnitude",
+    "vmag": "Magnitude",
+    "type": "Type",
+    "objtype": "Type",
+    "catalogcode": "CatalogCode",
+    "catalog": "CatalogCode",
+    "sequence": "Sequence",
+    "seq": "Sequence",
+}
+
+# Normalized RA headers that declare the column is in hours (e.g. ra_h, ra_hours)
+# rather than the default degrees. Only affects a bare-decimal RA value.
+_CSV_RA_HOURS_HEADERS = {"rah", "rahr", "rahrs", "rahours"}
+
+
+def _csv_header_key(header: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", header.strip().lower())
+
+
+def _normalize_csv_header(header: str) -> str:
+    """Map a raw CSV header onto a canonical column name, or '' if unknown."""
+    return _CSV_HEADER_ALIASES.get(_csv_header_key(header), "")
+
 
 def write_csv(obs_list: ObsList) -> str:
+    """Serialize an ObsList to CSV. CSV is an import format, not a save format;
+    this writer exists only to drive the read/write round-trip test."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
@@ -340,16 +416,28 @@ def read_csv(text: str) -> ObsList:
     entries: list[ObsListEntry] = []
     reader = csv.DictReader(io.StringIO(text))
     for row in reader:
-        name = row.get("Name", "")
-        ra_str = row.get("RA", "")
-        dec_str = row.get("Dec", "")
-        mag_str = row.get("Magnitude", "")
-        obj_type = row.get("Type", "")
-        catalog_code = row.get("CatalogCode", "")
-        seq_str = row.get("Sequence", "0")
+        fields: dict[str, str] = {}
+        ra_in_hours = False
+        for raw_key, value in row.items():
+            if raw_key is None or value is None:
+                continue
+            key = _csv_header_key(raw_key)
+            canonical = _CSV_HEADER_ALIASES.get(key, "")
+            if canonical:
+                fields[canonical] = value.strip()
+                if canonical == "RA" and key in _CSV_RA_HOURS_HEADERS:
+                    ra_in_hours = True
 
-        ra = _parse_ra_string(ra_str) if ra_str else 0.0
-        dec = _parse_dec_string(dec_str) if dec_str else 0.0
+        name = fields.get("Name", "")
+        ra_str = fields.get("RA", "")
+        dec_str = fields.get("Dec", "")
+        mag_str = fields.get("Magnitude", "")
+        obj_type = fields.get("Type", "")
+        catalog_code = fields.get("CatalogCode", "")
+        seq_str = fields.get("Sequence", "0")
+
+        ra = _parse_ra_flexible(ra_str, assume_hours=ra_in_hours)
+        dec = _parse_dec_flexible(dec_str)
         mag: Optional[float] = None
         if mag_str:
             try:
@@ -403,6 +491,69 @@ def read_text(text: str) -> ObsList:
 
 # ── Stellarium (.sol) ──────────────────────────────────────────────────
 
+# Stellarium's 2.0 export writes object types as English display names
+# (NebulaMgr type strings), keyed here lowercased -> PiFinder type code.
+# Unknown types map to "?" so they still pass the default Type filter.
+STELLARIUM_TYPE_MAP: dict[str, str] = {
+    "galaxy": "Gx",
+    "active galaxy": "Gx",
+    "radio galaxy": "Gx",
+    "interacting galaxy": "Gx",
+    "galaxy pair": "Gx",
+    "galaxy triplet": "Gx",
+    "group of galaxies": "Gx",
+    "quasar": "Gx",
+    "blazar": "Gx",
+    "bll object": "Gx",
+    "open star cluster": "OC",
+    "open cluster": "OC",
+    "star cluster": "OC",
+    "stellar association": "OC",
+    "globular star cluster": "Gb",
+    "globular cluster": "Gb",
+    "nebula": "Nb",
+    "emission nebula": "Nb",
+    "reflection nebula": "Nb",
+    "bipolar nebula": "Nb",
+    "protoplanetary nebula": "Nb",
+    "hii region": "Nb",
+    "emission object": "Nb",
+    "interstellar matter": "Nb",
+    "supernova remnant": "Nb",
+    "supernova candidate": "Nb",
+    "supernova remnant candidate": "Nb",
+    "molecular cloud": "Nb",
+    "planetary nebula": "PN",
+    "possible planetary nebula": "PN",
+    "dark nebula": "DN",
+    "cluster associated with nebulosity": "C+N",
+    "star": "*",
+    "symbiotic star": "*",
+    "emission-line star": "*",
+    "double star": "D*",
+    "asterism": "Ast",
+    "planet": "Pla",
+    "moon": "Pla",
+    "minor planet": "Pla",
+    "dwarf planet": "Pla",
+    "comet": "CM",
+    "region of the sky": "?",
+}
+
+
+def _map_stellarium_type(type_str: str) -> str:
+    """Map a Stellarium type string to a PiFinder type code.
+
+    Already-valid codes pass through (v1.0 files written by PiFinder store
+    codes); anything else unrecognized becomes '?' rather than leaking a raw
+    display string that no Type filter would ever select.
+    """
+    if not type_str:
+        return ""
+    if type_str in ARGO_TYPE_MAP:  # ARGO_TYPE_MAP keys the PiFinder code set
+        return type_str
+    return STELLARIUM_TYPE_MAP.get(type_str.strip().lower(), "?")
+
 
 def write_stellarium(obs_list: ObsList) -> str:
     data = {
@@ -428,10 +579,21 @@ def write_stellarium(obs_list: ObsList) -> str:
 def read_stellarium(text: str) -> ObsList:
     data = json.loads(text)
     name = data.get("shortName", "")
+    objects = data.get("objects", [])
+    # Version 2.0 (Stellarium's current export) nests objects one level down:
+    # observingLists -> {olud} -> {name, objects}. Import the default list,
+    # falling back to the first one.
+    observing_lists = data.get("observingLists")
+    if isinstance(observing_lists, dict) and observing_lists:
+        olud = data.get("defaultListOlud", "")
+        obs_list_data = observing_lists.get(olud, next(iter(observing_lists.values())))
+        name = obs_list_data.get("name", "") or name
+        objects = obs_list_data.get("objects", [])
     entries: list[ObsListEntry] = []
-    for obj in data.get("objects", []):
+    for obj in objects:
         designation = obj.get("designation", "")
-        obj_type = obj.get("objtype", "")
+        # v1.0 wrote 'objtype'; v2.0 writes 'type'.
+        obj_type = _map_stellarium_type(obj.get("objtype", "") or obj.get("type", ""))
         ra = _parse_ra_string(obj.get("ra", ""))
         dec = _parse_dec_string(obj.get("dec", ""))
         mag: Optional[float] = None
@@ -1053,9 +1215,11 @@ def detect_format(text: str, filename: str = "") -> str:
     if stripped.startswith("{"):
         try:
             data = json.loads(text)
-            if "version" in data and "objects" in data:
+            # .pifinder writes an integer version; Stellarium writes a string
+            # ("1.0"/"2.0"), so the type disambiguates the two JSON formats.
+            if isinstance(data.get("version"), int) and "objects" in data:
                 return "pifinder"
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, AttributeError):
             pass
         return "stellarium"
     if stripped.startswith("!J2000"):
@@ -1069,9 +1233,12 @@ def detect_format(text: str, filename: str = "") -> str:
     for line in text.splitlines()[:20]:
         if line.strip().startswith("USER "):
             return "autostar"
-    # Check for CSV header
-    if stripped.startswith("Name,") or stripped.startswith('"Name"'):
-        return "csv"
+    # Check for a CSV header row: a Name column plus RA and/or Dec, any case.
+    first_line = stripped.splitlines()[0] if stripped else ""
+    if "," in first_line:
+        headers = {_normalize_csv_header(h) for h in first_line.split(",")}
+        if "Name" in headers and ("RA" in headers or "Dec" in headers):
+            return "csv"
 
     return "text"
 

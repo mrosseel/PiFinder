@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import pytz
 
+from .sqm import SQM
+
 logger = logging.getLogger("SweepMetadata")
 
 
@@ -89,6 +91,27 @@ def save_sweep_metadata(
     elif camera_type is not None:
         # Fallback: just record camera type if no noise floor details
         metadata["noise_floor_estimator"] = {"camera_type": camera_type}
+
+    # Record the effective photometry constants so the sweep is
+    # self-describing: bias_offset is calibration-aware (SQM loads the
+    # per-camera calibration JSON on init), not just the profile default.
+    if camera_type is not None:
+        try:
+            profile = SQM(camera_type).profile
+            metadata["camera"] = {
+                "type": camera_type,
+                "bias_offset": profile.bias_offset,
+                "sqm_band_offset": profile.sqm_band_offset,
+                "color_coefficient": profile.color_coefficient,
+                # Extent of the archived raw frames. Sweeps from the
+                # cropped era carry no such field; these hold the whole
+                # sensor, which a reader reduces to the crop with
+                # CameraProfile.ensure_cropped() before photometry.
+                "raw_frame_extent": "full_sensor",
+                "raw_frame_size": list(profile.raw_size),
+            }
+        except Exception as e:
+            logger.warning(f"Could not record camera constants: {e}")
 
     if notes:
         metadata["notes"] = notes

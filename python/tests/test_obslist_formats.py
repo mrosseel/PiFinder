@@ -5,6 +5,8 @@ Each format is tested by creating an ObsList, writing it to a string,
 reading it back, and verifying the entries match.
 """
 
+import json
+
 import pytest
 from PiFinder.calc_utils import (
     ra_to_hms_exact,
@@ -140,6 +142,58 @@ def test_csv_roundtrip():
 
 
 @pytest.mark.unit
+def test_csv_import_decimal_degrees_lowercase_headers():
+    # A typical third-party export: lowercase headers, decimal-degree coords.
+    text = (
+        "name,ra,dec,mag\n"
+        "mess003,205.8583333,28.2441667,6.3\n"
+        "mess013,250.6666667,36.4111111,5.8\n"
+        "mess092,259.4916667,43.1088889,6.5\n"
+    )
+    parsed = read_csv(text)
+    assert [e.name for e in parsed.entries] == ["mess003", "mess013", "mess092"]
+    assert [round(e.ra, 2) for e in parsed.entries] == [205.86, 250.67, 259.49]
+    assert [round(e.dec, 2) for e in parsed.entries] == [28.24, 36.41, 43.11]
+    assert parsed.entries[0].mag.filter_mag == pytest.approx(6.3)
+
+
+@pytest.mark.unit
+def test_csv_import_header_aliases():
+    text = "Name,RA_deg,DEC,VMag,Obj_Type\nComet X,12.5,-3.0,9.1,Cm\n"
+    entry = read_csv(text).entries[0]
+    assert entry.name == "Comet X"
+    assert entry.ra == pytest.approx(12.5)
+    assert entry.dec == pytest.approx(-3.0)
+    assert entry.mag.filter_mag == pytest.approx(9.1)
+    assert entry.obj_type == "Cm"
+
+
+@pytest.mark.unit
+def test_csv_import_colon_coordinates():
+    text = "Name,RA,Dec\nNGC 224,00:42:44,+41:16:09\n"
+    entry = read_csv(text).entries[0]
+    assert entry.ra == pytest.approx(10.68, abs=0.05)
+    assert entry.dec == pytest.approx(41.27, abs=0.05)
+
+
+@pytest.mark.unit
+def test_csv_import_ra_hours_header():
+    # An `ra_h` header declares RA in hours; a bare decimal is scaled by 15.
+    text = "Name,RA_h,Dec\nM 3,13.7239,28.2442\n"
+    entry = read_csv(text).entries[0]
+    assert entry.ra == pytest.approx(205.86, abs=0.05)
+    assert entry.dec == pytest.approx(28.24, abs=0.05)
+
+
+@pytest.mark.unit
+def test_csv_import_ra_hours_header_ignores_sexagesimal():
+    # The hours hint only scales bare decimals, never an already-HMS value.
+    text = "Name,RA_hours,Dec\nNGC 224,00:42:44,+41:16:09\n"
+    entry = read_csv(text).entries[0]
+    assert entry.ra == pytest.approx(10.68, abs=0.05)
+
+
+@pytest.mark.unit
 def test_text_roundtrip():
     obs = _sample_list()
     text = write_text(obs)
@@ -158,6 +212,71 @@ def test_stellarium_roundtrip():
     parsed = read_stellarium(text)
     assert parsed.name == "Test List"
     _assert_entries_close(obs.entries, parsed.entries, ra_tol=0.15, dec_tol=0.15)
+
+
+@pytest.mark.unit
+def test_stellarium_v2_import():
+    # Stellarium's current export: objects nested under observingLists,
+    # spaceless RA strings, and 'type' instead of 'objtype'.
+    text = json.dumps(
+        {
+            "defaultListOlud": "{uuid-2}",
+            "observingLists": {
+                "{uuid-1}": {
+                    "name": "Other List",
+                    "objects": [],
+                },
+                "{uuid-2}": {
+                    "name": "Juli 2026",
+                    "objects": [
+                        {
+                            "designation": "Dumbbell Nebula",
+                            "ra": "19h59m37.8s",
+                            "dec": "+22°43'17\"",
+                            "magnitude": "7.40",
+                            "type": "Nebula",
+                        }
+                    ],
+                },
+            },
+            "shortName": "Observing list for Stellarium",
+            "version": "2.0",
+        }
+    )
+    parsed = read_stellarium(text)
+    assert parsed.name == "Juli 2026"
+    assert len(parsed.entries) == 1
+    entry = parsed.entries[0]
+    assert entry.name == "Dumbbell Nebula"
+    # Stellarium type strings map to PiFinder type codes so imported
+    # objects pass the Type filter.
+    assert entry.obj_type == "Nb"
+    assert entry.ra == pytest.approx(299.9075, abs=0.01)
+    assert entry.dec == pytest.approx(22.7214, abs=0.01)
+    assert entry.mag.filter_mag == pytest.approx(7.4)
+
+
+@pytest.mark.unit
+def test_stellarium_type_mapping():
+    def _read_type(type_str):
+        text = json.dumps(
+            {
+                "version": "1.0",
+                "shortName": "x",
+                "objects": [
+                    {"designation": "n", "objtype": type_str, "ra": "", "dec": ""}
+                ],
+            }
+        )
+        return read_stellarium(text).entries[0].obj_type
+
+    assert _read_type("Planetary Nebula") == "PN"
+    assert _read_type("open star cluster") == "OC"
+    # PiFinder codes (from our own v1.0 exports) pass through unchanged
+    assert _read_type("Gx") == "Gx"
+    # Unknown strings become '?' so the default Type filter still shows them
+    assert _read_type("Something Exotic") == "?"
+    assert _read_type("") == ""
 
 
 @pytest.mark.unit
@@ -404,6 +523,16 @@ class TestDetectFormat:
     def test_by_content_stellarium(self):
         assert detect_format('{"version": "1.0"}') == "stellarium"
 
+    def test_by_content_stellarium_v1_with_objects(self):
+        # Stellarium 1.0 also has version + objects; its string version
+        # must not be mistaken for the integer-versioned .pifinder format.
+        text = '{"version": "1.0", "shortName": "x", "objects": []}'
+        assert detect_format(text) == "stellarium"
+
+    def test_by_content_stellarium_v2(self):
+        text = '{"version": "2.0", "observingLists": {}, "shortName": "x"}'
+        assert detect_format(text) == "stellarium"
+
     def test_by_content_eqmod(self):
         assert detect_format("!J2000\n1.234; 45.678; NGC 224\n") == "eqmod"
 
@@ -416,6 +545,13 @@ class TestDetectFormat:
 
     def test_by_content_csv(self):
         assert detect_format("Name,RA,Dec,Magnitude\n") == "csv"
+
+    def test_by_content_csv_lowercase(self):
+        assert detect_format("name,ra,dec,mag\nM 3,205.8,28.2,6.3\n") == "csv"
+
+    def test_by_content_csv_without_extension(self):
+        # A mis-named CSV is still detected by its header row.
+        assert detect_format("Name,RA,Dec\nNGC 224,10.7,41.3\n", "list.txt") == "csv"
 
     def test_by_content_text_fallback(self):
         assert detect_format("NGC 224\nM 42\n") == "text"

@@ -15,6 +15,7 @@ import pytest
 from PiFinder import obslist
 from PiFinder.obslist import _normalize_designation, resolve_by_name
 from PiFinder.obslist_formats import ObsList, ObsListEntry
+from PiFinder.ui.ui_utils import normalize
 
 
 @pytest.mark.unit
@@ -39,22 +40,45 @@ class TestNormalizeDesignation:
 @pytest.mark.unit
 class TestResolveByName:
     def test_exact_match(self):
-        index = {"andromeda galaxy": "M31", "vy and": "SaR7"}
+        index = {normalize("Andromeda Galaxy"): "M31", normalize("VY And"): "SaR7"}
         assert resolve_by_name("Andromeda Galaxy", index) == "M31"
 
     def test_normalized_match(self):
-        index = {"vy and": "SaR7"}
+        index = {normalize("VY And"): "SaR7"}
         assert resolve_by_name("VY Andromedae", index) == "SaR7"
 
     def test_exact_preferred_over_normalized(self):
-        index = {"vy andromedae": "EXACT", "vy and": "NORM"}
+        index = {normalize("VY Andromedae"): "EXACT", normalize("VY And"): "NORM"}
         assert resolve_by_name("VY Andromedae", index) == "EXACT"
 
     def test_no_match(self):
-        assert resolve_by_name("CGCS135", {"vy and": "SaR7"}) is None
+        assert resolve_by_name("CGCS135", {normalize("VY And"): "SaR7"}) is None
+
+    def test_spacing_insensitive(self):
+        # A CSV "M 13" matches an object stored as "M13" (no space), and vice versa.
+        index = {normalize("M13"): "OBJ"}
+        assert resolve_by_name("M 13", index) == "OBJ"
+        assert resolve_by_name("M13", index) == "OBJ"
 
     def test_empty_name(self):
         assert resolve_by_name("", {"x": 1}) is None
+
+
+@pytest.mark.unit
+class TestCoordinateObjectType:
+    def test_unknown_type_becomes_question_mark(self):
+        # A raw source type string ("Nebula") matches no Type filter entry,
+        # which would hide the object from every filtered list.
+        entry = ObsListEntry(name="Ring Nebula", ra=283.4, dec=33.0, obj_type="Nebula")
+        assert obslist._coordinate_object(entry, 0).obj_type == "?"
+
+    def test_known_code_kept(self):
+        entry = ObsListEntry(name="M 57", ra=283.4, dec=33.0, obj_type="PN")
+        assert obslist._coordinate_object(entry, 0).obj_type == "PN"
+
+    def test_empty_type_becomes_question_mark(self):
+        entry = ObsListEntry(name="X", ra=1.0, dec=2.0)
+        assert obslist._coordinate_object(entry, 0).obj_type == "?"
 
 
 def _entry(name, code, seq, desc=""):

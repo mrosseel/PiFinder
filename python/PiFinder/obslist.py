@@ -16,9 +16,11 @@ import os
 import logging
 from PiFinder import utils
 from PiFinder.calc_utils import sf_utils
+from PiFinder.obj_types import OBJ_TYPES
 from PiFinder.catalog_base import VirtualIDManager
 from PiFinder.catalogs import Catalogs
 from PiFinder.composite_object import CompositeObject
+from PiFinder.ui.ui_utils import normalize
 from PiFinder.obslist_formats import (
     ObsList,
     ObsListEntry,
@@ -104,12 +106,16 @@ def _coordinate_object(entry: ObsListEntry, index: int) -> CompositeObject:
         except Exception:
             pass
     virtual_id = VirtualIDManager.mint_id()
+    # Only known type codes may reach the object: a raw source string like
+    # "Nebula" matches no Type filter entry, so the object would import but
+    # never display. Unknown types become '?' and stay visible.
+    obj_type = entry.obj_type if entry.obj_type in OBJ_TYPES else "?"
     return CompositeObject(
         id=virtual_id,
         object_id=virtual_id,
         ra=entry.ra,
         dec=entry.dec,
-        obj_type=entry.obj_type or "?",
+        obj_type=obj_type,
         const=const,
         size=entry.size,
         # Coordinate objects always carry catalog code OBS (see Catalog
@@ -241,13 +247,15 @@ def _normalize_designation(name: str):
 
 def _build_name_index(catalogs: Catalogs) -> dict:
     """
-    Map every catalog object's names (lowercased) to the object, for name-based
-    resolution. First writer wins, so a name resolves to one stable object.
+    Map every catalog object's names to the object, for name-based resolution.
+    Names are normalized (ui_utils.normalize) so spacing/case variants like
+    "NGC 6205" and "NGC6205" collapse together. First writer wins, so a name
+    resolves to one stable object.
     """
     index: dict = {}
     for obj in catalogs.get_objects(only_selected=False, filtered=False):
         for nm in obj.names:
-            key = nm.strip().lower()
+            key = normalize(nm)
             if key and key not in index:
                 index[key] = obj
     return index
@@ -255,16 +263,17 @@ def _build_name_index(catalogs: Catalogs) -> dict:
 
 def resolve_by_name(name: str, name_index: dict):
     """
-    Resolve an entry to a catalog object by exact (case-insensitive) name,
-    trying a constellation-normalized variant ("VY Andromedae" -> "VY And").
-    Returns the shared catalog object or None.
+    Resolve an entry to a catalog object by normalized name (ui_utils.normalize:
+    case-, space- and hyphen-insensitive), also trying a constellation-normalized
+    variant ("VY Andromedae" -> "VY And"). Returns the shared catalog object or
+    None.
     """
     if not name:
         return None
-    keys = [name.strip().lower()]
-    normalized = _normalize_designation(name)
-    if normalized:
-        keys.append(normalized.lower())
+    keys = [normalize(name)]
+    designation = _normalize_designation(name)
+    if designation:
+        keys.append(normalize(designation))
     for key in keys:
         obj = name_index.get(key)
         if obj:
