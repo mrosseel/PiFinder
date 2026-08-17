@@ -16,9 +16,23 @@
         "store_path": "/nix/store/pp50jkybq9mja2g28p96ir3q0ccd0pp7-nixos-system-pifinder-25.11.20260209.2db38e0",
         "title": "[testable] Full-sensor plate solving + cached optical calibration",
         "version": "PR#33-cf65033"
+      },
+      {
+        "available": true,
+        "built_at": "2026-08-17T21:48:22+00:00",
+        "kind": "pr",
+        "label": "PR#29-79ea1e9",
+        "notes": "## Summary\n\n- add an MPC Soft00Bright-based minor-planet catalog with stable asteroid numbers and an amateur-oriented magnitude cutoff\n- calculate apparent position, H-G magnitude, Earth/Sun distance, opposition or greatest elongation, peak brightness, and topocentric sky motion in arcseconds per hour\n- add Nearby, Opposition, Brightest, and Standard asteroid sorting with compact display names and a dedicated asteroid marker\n- share atomic background element downloads between comets and asteroids, retaining old data while showing download progress\n- migrate saved catalog filters so existing installations gain the asteroid catalog\n\nBased directly on `origin/deepchart` at `03eebe1244b3`.\n\n## Validation\n\n- focused non-UI unit tests: 28 passed\n- Ruff passed\n- UI test collection currently requires the deepchart `healpy` dependency, which is absent from this workspace venv",
+        "number": 29,
+        "source_ref": "feature/observable-asteroids",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "79ea1e9aff0fb0654da34b35114cd41a62ed3414",
+        "store_path": "/nix/store/rcmaqm4i9pvfqk5mk89jxmbq4w3iqhdl-nixos-system-pifinder-25.11.20260209.2db38e0",
+        "title": "feat(catalog): add observable asteroids",
+        "version": "PR#29-79ea1e9"
       }
     ]
   },
-  "generated_at": "2026-07-29T16:05:12+00:00",
+  "generated_at": "2026-08-17T21:48:23+00:00",
   "schema": 1
 }
