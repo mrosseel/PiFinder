@@ -50,6 +50,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           persist-credentials: false
+          # Fork PRs: pull_request_target checkout of the head requires opt-in
+          # since actions/checkout began refusing it. The head SHA is pinned
+          # explicitly and only reached after the `testable`/`preview` label,
+          # which is the review gate for running contributor code.
+          allow-unsafe-pr-checkout: true
 
       - uses: DeterminateSystems/nix-installer-action@main
         with:
@@ -114,6 +119,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           persist-credentials: false
+          # Fork PRs: pull_request_target checkout of the head requires opt-in
+          # since actions/checkout began refusing it. The head SHA is pinned
+          # explicitly and only reached after the `testable`/`preview` label,
+          # which is the review gate for running contributor code.
+          allow-unsafe-pr-checkout: true
 
       - name: Ensure nix is on PATH (self-hosted runner)
         run: |
