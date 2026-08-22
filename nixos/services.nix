@@ -74,6 +74,19 @@ in {
       default = false;
       description = "Enable development mode (NFS netboot support, etc.)";
     };
+
+    deltaUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "https://deltas.pifinder.eu";
+      description = ''
+        Base URL of the pifinder-differ delta server. When set, the upgrade
+        prefetches byte-level patches against store paths the device already
+        holds before letting nix download whole paths. Empty (the default)
+        disables delta prefetch entirely; every failure while prefetching
+        falls back to a normal binary-cache download.
+      '';
+    };
   };
 
   config = {
@@ -483,8 +496,11 @@ in {
       RemainAfterExit = true;
       WorkingDirectory = "/home/pifinder/PiFinder/python";
       ExecStart = "${pifinderPythonEnv}/bin/python -m PiFinder.nixos_upgrade --default-camera ${cfg.cameraType}";
+    } // lib.optionalAttrs (cfg.deltaUrl != "") {
+      Environment = [ "PIFINDER_DELTA_URL=${cfg.deltaUrl}" ];
     };
-    path = with pkgs; [ nix systemd coreutils set-extlinux-default ];
+    # zstd applies delta patches (unused, harmless when deltaUrl is unset).
+    path = with pkgs; [ nix systemd coreutils zstd set-extlinux-default ];
   };
 
   # ---------------------------------------------------------------------------
