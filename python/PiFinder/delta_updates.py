@@ -6,6 +6,10 @@ holds (any retained generation), applies them, and imports the results into
 the store. Everything it manages to import is a path nix no longer downloads.
 
 Protocol (server: pifinder-differ):
+    POST {url}/update-start {"target_toplevel": "/nix/store/..."}
+      200  {"session", "budget", "expires_in"}  per-update request budget,
+           sized by the server from the target closure. The session token
+           rides an x-update-session header on every later request.
     POST {url}/delta {"target": "/nix/store/...", "bases": ["/nix/store/..."]}
       200  {"url", "size", "window_log", "nar_sha256", "references",
             "deriver", "basis": [...]}          patch ready
@@ -149,14 +153,36 @@ def basis_candidates(
 # Server protocol.
 
 
-def request_delta(target: str, bases: list[str]) -> tuple[str, dict]:
+def start_session(target_toplevel: str) -> str | None:
+    """Open the per-update session. The server sizes the request budget from
+    the target closure; without a session every later request is refused, so
+    None disables the prefetch for this run."""
+    body = json.dumps({"target_toplevel": target_toplevel}).encode()
+    req = urllib.request.Request(
+        f"{_delta_url()}/update-start",
+        data=body,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            return json.load(resp).get("session") or None
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        logger.warning("update-start failed: %s", exc)
+        return None
+
+
+def request_delta(target: str, bases: list[str], session: str) -> tuple[str, dict]:
     """One POST /delta. Returns (state, info) with state one of
     "hit" (info = server response), "wait", "none", "error"."""
     body = json.dumps({"target": target, "bases": bases}).encode()
     req = urllib.request.Request(
         f"{_delta_url()}/delta",
         data=body,
-        headers={"content-type": "application/json"},
+        headers={
+            "content-type": "application/json",
+            "x-update-session": session,
+        },
         method="POST",
     )
     try:
@@ -259,13 +285,14 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _download(url: str, dest: Path) -> None:
-    with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT) as resp:
+def _download(url: str, dest: Path, session: str) -> None:
+    req = urllib.request.Request(url, headers={"x-update-session": session})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         with dest.open("wb") as f:
             shutil.copyfileobj(resp, f, 1024 * 1024)
 
 
-def apply_delta(target: str, info: dict, workdir: Path) -> None:
+def apply_delta(target: str, info: dict, workdir: Path, session: str = "") -> None:
     """Reconstruct `target` from a local base plus the served patch, verify,
     and import. Raises DeltaError on any problem; never leaves a registered
     path unverified."""
@@ -300,7 +327,7 @@ def apply_delta(target: str, info: dict, workdir: Path) -> None:
     base_nar = workdir / "base.nar"
     new_nar = workdir / "new.nar"
     try:
-        _download(f"{_delta_url()}{info['url']}", patch)
+        _download(f"{_delta_url()}{info['url']}", patch, session)
 
         with base_nar.open("wb") as f:
             dump = subprocess.run(["nix-store", "--dump", base], stdout=f, timeout=600)
@@ -349,7 +376,7 @@ def apply_delta(target: str, info: dict, workdir: Path) -> None:
 # The one entry point nixos_upgrade calls.
 
 
-def prefetch_deltas(paths: tuple[str, ...]) -> int:
+def prefetch_deltas(target_toplevel: str, paths: tuple[str, ...]) -> int:
     """Fill the local store from patches. Returns paths imported.
 
     Best-effort: any failure — server down, patch broken, disk full — just
@@ -360,6 +387,9 @@ def prefetch_deltas(paths: tuple[str, ...]) -> int:
         return 0
     imported = 0
     try:
+        session = start_session(target_toplevel)
+        if session is None:
+            return 0
         index = local_store_index()
         with tempfile.TemporaryDirectory(prefix="pifinder-delta.") as tmp:
             workdir = Path(tmp)
@@ -370,10 +400,10 @@ def prefetch_deltas(paths: tuple[str, ...]) -> int:
                 bases = basis_candidates(target, index)
                 if not bases:
                     continue
-                state, info = request_delta(target, bases)
+                state, info = request_delta(target, bases, session)
                 if state == "hit":
                     try:
-                        apply_delta(target, info, workdir)
+                        apply_delta(target, info, workdir, session)
                         imported += 1
                     except DeltaError as exc:
                         logger.warning("delta for %s failed: %s", target, exc)
@@ -387,10 +417,10 @@ def prefetch_deltas(paths: tuple[str, ...]) -> int:
                 time.sleep(RETRY_WAIT)
                 still: list[tuple[str, list[str]]] = []
                 for target, bases in waiting:
-                    state, info = request_delta(target, bases)
+                    state, info = request_delta(target, bases, session)
                     if state == "hit":
                         try:
-                            apply_delta(target, info, workdir)
+                            apply_delta(target, info, workdir, session)
                             imported += 1
                         except DeltaError as exc:
                             logger.warning("delta for %s failed: %s", target, exc)

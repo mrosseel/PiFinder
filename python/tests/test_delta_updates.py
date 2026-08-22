@@ -140,7 +140,7 @@ def test_request_delta_hit(monkeypatch):
         "urlopen",
         lambda req, timeout=None: _FakeResp(200, payload),
     )
-    state, info = delta_updates.request_delta(TARGET, [BASE])
+    state, info = delta_updates.request_delta(TARGET, [BASE], "tok")
     assert state == "hit"
     assert info == {"url": "/blobs/x.zst"}
 
@@ -165,7 +165,7 @@ def test_request_delta_non_hit(monkeypatch, outcome, expected):
 
     monkeypatch.setenv("PIFINDER_DELTA_URL", "http://differ")
     monkeypatch.setattr(delta_updates.urllib.request, "urlopen", _open)
-    state, _ = delta_updates.request_delta(TARGET, [BASE])
+    state, _ = delta_updates.request_delta(TARGET, [BASE], "tok")
     assert state == expected
 
 
@@ -211,7 +211,7 @@ def test_apply_delta_rejects_missing_basis(tmp_path, monkeypatch):
 
 def test_prefetch_disabled_without_env(monkeypatch):
     monkeypatch.delenv("PIFINDER_DELTA_URL", raising=False)
-    assert delta_updates.prefetch_deltas((TARGET,)) == 0
+    assert delta_updates.prefetch_deltas(TARGET, (TARGET,)) == 0
 
 
 def test_prefetch_never_raises(monkeypatch):
@@ -220,5 +220,53 @@ def test_prefetch_never_raises(monkeypatch):
     def _boom(*a, **kw):
         raise RuntimeError("chaos")
 
-    monkeypatch.setattr(delta_updates, "local_store_index", _boom)
-    assert delta_updates.prefetch_deltas((TARGET,)) == 0
+    monkeypatch.setattr(delta_updates, "start_session", _boom)
+    assert delta_updates.prefetch_deltas(TARGET, (TARGET,)) == 0
+
+
+def test_prefetch_stops_without_session(monkeypatch):
+    monkeypatch.setenv("PIFINDER_DELTA_URL", "http://differ")
+    monkeypatch.setattr(delta_updates, "start_session", lambda t: None)
+
+    def _no_requests(*a, **kw):
+        raise AssertionError("no /delta request may happen without a session")
+
+    monkeypatch.setattr(delta_updates, "request_delta", _no_requests)
+    assert delta_updates.prefetch_deltas(TARGET, (TARGET,)) == 0
+
+
+def test_start_session_parses_token(monkeypatch):
+    payload = json.dumps({"session": "abc123", "budget": 100}).encode()
+    monkeypatch.setenv("PIFINDER_DELTA_URL", "http://differ")
+    captured = {}
+
+    def _open(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResp(200, payload)
+
+    monkeypatch.setattr(delta_updates.urllib.request, "urlopen", _open)
+    assert delta_updates.start_session(TARGET) == "abc123"
+    assert captured["url"].endswith("/update-start")
+
+
+def test_start_session_none_on_failure(monkeypatch):
+    monkeypatch.setenv("PIFINDER_DELTA_URL", "http://differ")
+
+    def _open(req, timeout=None):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(delta_updates.urllib.request, "urlopen", _open)
+    assert delta_updates.start_session(TARGET) is None
+
+
+def test_request_delta_sends_session_header(monkeypatch):
+    monkeypatch.setenv("PIFINDER_DELTA_URL", "http://differ")
+    captured = {}
+
+    def _open(req, timeout=None):
+        captured["session"] = req.headers.get("X-update-session")
+        return _FakeResp(200, b"{}")
+
+    monkeypatch.setattr(delta_updates.urllib.request, "urlopen", _open)
+    delta_updates.request_delta(TARGET, [BASE], "tok-1")
+    assert captured["session"] == "tok-1"
