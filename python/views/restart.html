@@ -18,10 +18,7 @@
 
 {% block scripts %}
 <script>
-setTimeout(function(){
-    location.href="/";
-    }, 40000); // 40000 milliseconds = 40 seconds
-
 fetch("/system/restart", { method: "POST" });
+redirectWhenUp("/", "/", 20000, 120000);
 </script>
 {% endblock %}

@@ -15,9 +15,7 @@
 
 {% block scripts %}
 <script>
-  setTimeout(function() {
-    location.href = "/";
-  }, 20000);
   fetch("/system/restart_pifinder", { method: "POST" });
+  redirectWhenUp("/", "/", 8000, 90000);
 </script>
 {% endblock %}

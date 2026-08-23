@@ -155,24 +155,6 @@ def test_logs_container_and_stats_present(driver):
 
 
 @pytest.mark.web
-def test_logs_hidden_buttons_present(driver):
-    """Test that initially hidden control buttons are present in DOM"""
-    login_to_logs(driver)
-
-    # Check for Resume from Current button (initially hidden)
-    restart_current_btn = driver.find_element(By.ID, "restartFromCurrent")
-    assert restart_current_btn is not None
-    # Should be hidden by default
-    assert restart_current_btn.value_of_css_property("display") == "none"
-
-    # Check for Restart from End button (initially hidden)
-    restart_end_btn = driver.find_element(By.ID, "restartFromEnd")
-    assert restart_end_btn is not None
-    # Should be hidden by default
-    assert restart_end_btn.value_of_css_property("display") == "none"
-
-
-@pytest.mark.web
 def test_logs_card_structure(driver):
     """Test that the main card structure is present"""
     login_to_logs(driver)

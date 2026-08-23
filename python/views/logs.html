@@ -45,7 +45,7 @@
   .controls {
     margin-bottom: 10px;
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 10px;
     align-items: center;
   }
@@ -123,12 +123,6 @@
           <button id="pauseButton" class="btn">
             <i class="material-icons left">pause</i>{{ _('Pause') }}
           </button>
-          <button id="restartFromCurrent" class="btn" style="display: none;">
-            <i class="material-icons left">play_arrow</i>{{ _('Resume from Current') }}
-          </button>
-          <button id="restartFromEnd" class="btn" style="display: none;">
-            <i class="material-icons left">replay</i>{{ _('Restart from End') }}
-          </button>
           <button id="copyButton" class="btn">
             <i class="material-icons left">content_copy</i>{{ _('Copy to Clipboard') }}
           </button>
@@ -162,11 +156,11 @@
 <script>
 let currentPosition = 0;
 let isPaused = false;
-let logBuffer = [];
-const BUFFER_SIZE = 100;
-const LINE_HEIGHT = 20;
+let lineCount = 0;
+const BUFFER_SIZE = 500;
 let pollTimer = null;
-let lastLine = '';
+const PAUSE_LABEL = '<i class="material-icons left">pause</i>' + {{ _('Pause')|tojson }};
+const RESUME_LABEL = '<i class="material-icons left">play_arrow</i>' + {{ _('Resume')|tojson }};
 
 const MIN_POLL_INTERVAL = 1000;
 const MAX_POLL_INTERVAL = 10000;
@@ -200,20 +194,7 @@ async function fetchLogs() {
         }
 
         if (data.logs && data.logs.length > 0) {
-            // Add new logs to buffer, skipping duplicates
-            data.logs.forEach(line => {
-                if (line !== lastLine) {
-                    logBuffer.push(line);
-                    lastLine = line;
-                }
-            });
-
-            // Trim buffer if it exceeds size
-            if (logBuffer.length > BUFFER_SIZE) {
-                logBuffer = logBuffer.slice(-BUFFER_SIZE);
-            }
-
-            updateLogDisplay();
+            appendLogLines(data.logs);
         }
     } catch (error) {
         console.error('Error fetching logs:', error);
@@ -223,86 +204,54 @@ async function fetchLogs() {
     }
 }
 
-function updateLogDisplay() {
+function levelClass(line) {
+    if (line.includes('ERROR')) return 'error';
+    if (line.includes('WARNING')) return 'warning';
+    if (line.includes('INFO')) return 'info';
+    if (line.includes('DEBUG')) return 'debug';
+    return '';
+}
+
+function appendLogLines(lines) {
     const logContent = document.getElementById('logContent');
-    logContent.innerHTML = '';
-    
-    logBuffer.forEach(line => {
+    const logViewer = document.getElementById('logViewer');
+    const fragment = document.createDocumentFragment();
+    lines.forEach(line => {
         const logLine = document.createElement('div');
-        logLine.style.height = `${LINE_HEIGHT}px`;
-        logLine.style.whiteSpace = 'pre';
-        logLine.textContent = line;
-        
-        // Add color based on log level
-        if (line.includes('ERROR')) {
-            logLine.style.color = '#ff6b6b';
-        } else if (line.includes('WARNING')) {
-            logLine.style.color = '#ffd93d';
-        } else if (line.includes('INFO')) {
-            logLine.style.color = '#6bff6b';
-        } else if (line.includes('DEBUG')) {
-            logLine.style.color = '#6b6bff';
-        }
-        
-        logContent.appendChild(logLine);
+        logLine.className = 'log-line ' + levelClass(line);
+        logLine.textContent = line.replace(/\n$/, '');
+        fragment.appendChild(logLine);
     });
-    
-    // Auto-scroll if not paused
-    if (!isPaused) {
-        logContent.scrollTop = logContent.scrollHeight;
+    logContent.appendChild(fragment);
+    lineCount += lines.length;
+
+    // Keep the DOM bounded: drop the oldest lines past the buffer size
+    while (logContent.childElementCount > BUFFER_SIZE) {
+        logContent.removeChild(logContent.firstElementChild);
     }
-    
-    // Update total lines counter
-    document.getElementById('totalLines').textContent = logBuffer.length;
+
+    document.getElementById('loadingMessage').style.display = 'none';
+    if (!isPaused) {
+        logViewer.scrollTop = logViewer.scrollHeight;
+    }
+    document.getElementById('totalLines').textContent = lineCount;
 }
 
 function togglePause() {
     isPaused = !isPaused;
-    const pauseButton = document.getElementById('pauseButton');
-    pauseButton.innerHTML = isPaused ? '<i class="material-icons left">play_arrow</i>{{ _('Resume') }}' : '<i class="material-icons left">pause</i>{{ _('Pause') }}';
-
+    document.getElementById('pauseButton').innerHTML = isPaused ? RESUME_LABEL : PAUSE_LABEL;
     if (!isPaused) {
         fetchLogs();
     }
 }
 
-function restartFromEnd() {
-    currentPosition = 0;
-    logBuffer = [];
-    isPaused = false;
-    currentPollInterval = MIN_POLL_INTERVAL;
-    document.getElementById('pauseButton').innerHTML = '<i class="material-icons left">pause</i>{{ _('Pause') }}';
-    fetchLogs();
-}
-
 // Start fetching logs when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    // Show loading message
-    const loadingMessage = document.querySelector('.loading-message');
-    loadingMessage.style.display = 'flex';
-
-    // Start log fetching (sequential — next fetch waits for this one to finish)
     fetchLogs();
-    
-    // Hide loading message after first logs appear
-    const observer = new MutationObserver((mutations) => {
-        if (document.getElementById('logContent').textContent.trim()) {
-            loadingMessage.style.display = 'none';
-            observer.disconnect();
-        }
-    });
-    
-    observer.observe(document.getElementById('logContent'), {
-        childList: true,
-        subtree: true,
-        characterData: true
-    });
-
 });
 
-// Cleanup on page unload
 window.addEventListener('beforeunload', () => {
-    clearInterval(updateInterval);
+    clearTimeout(pollTimer);
 });
 
 // Add copy to clipboard functionality
@@ -312,22 +261,23 @@ document.getElementById('copyButton').addEventListener('click', function() {
     const btn = this;
     const originalText = btn.innerHTML;
 
-    const showFeedback = (html) => {
-        btn.innerHTML = html;
+    const showFeedback = (icon, label) => {
+        btn.innerHTML = '<i class="material-icons left">' + icon + '</i>' + label;
         setTimeout(() => { btn.innerHTML = originalText; }, 2000);
     };
+    const failedLabel = {{ _('Failed to copy')|tojson }};
 
     if (!navigator.clipboard) {
         console.error('Clipboard API not available');
-        showFeedback('<i class="material-icons left">error</i>{{ _('Failed to copy') }}');
+        showFeedback('error', failedLabel);
         return;
     }
 
     navigator.clipboard.writeText(text).then(() => {
-        showFeedback('<i class="material-icons left">check</i>{{ _('Copied!') }}');
+        showFeedback('check', {{ _('Copied!')|tojson }});
     }).catch(err => {
         console.error('Failed to copy text: ', err);
-        showFeedback('<i class="material-icons left">error</i>{{ _('Failed to copy') }}');
+        showFeedback('error', failedLabel);
     });
 });
 
@@ -337,7 +287,12 @@ function loadLogConfigs() {
         .then(response => response.json())
         .then(data => {
             const configSelect = document.getElementById('configSelect');
-            configSelect.innerHTML = '<option value="" disabled>{{ _('Select Log Configuration') }}</option>';
+            configSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.disabled = true;
+            placeholder.textContent = {{ _('Select Log Configuration')|tojson }};
+            configSelect.appendChild(placeholder);
             data.configs.forEach(cfg => {
                 const option = document.createElement('option');
                 option.value = cfg.file;
@@ -352,7 +307,9 @@ function loadLogConfigs() {
 document.getElementById('configSelect').addEventListener('change', function(e) {
     const configFile = e.target.value;
     if (!configFile) return;
-    if (!confirm(`{{ _('Switch log configuration to') }} "${e.target.options[e.target.selectedIndex].text}" {{ _('and restart PiFinder?') }}`)) {
+    const configName = e.target.options[e.target.selectedIndex].text;
+    const question = {{ _('Switch log configuration to "%(name)s" and restart PiFinder?')|tojson }}.replace('%(name)s', configName);
+    if (!confirm(question)) {
         loadLogConfigs();
         return;
     }
@@ -372,7 +329,7 @@ document.getElementById('uploadLogConfInput').addEventListener('change', functio
     const file = e.target.files[0];
     if (!file) return;
     if (!file.name.startsWith('logconf_') || !file.name.endsWith('.json')) {
-        alert('{{ _('File must be named logconf_<name>.json') }}');
+        alert({{ _('File must be named logconf_<name>.json')|tojson }});
         e.target.value = '';
         return;
     }
@@ -384,7 +341,7 @@ document.getElementById('uploadLogConfInput').addEventListener('change', functio
             if (result.status === 'ok') {
                 loadLogConfigs();
             } else {
-                alert('{{ _('Upload failed:') }} ' + result.message);
+                alert({{ _('Upload failed:')|tojson }} + ' ' + result.message);
             }
         })
         .catch(error => console.error('Error uploading log config:', error));
@@ -394,17 +351,6 @@ document.getElementById('uploadLogConfInput').addEventListener('change', functio
 // Initial load of configs
 loadLogConfigs();
 
-// Set up button event listeners
-document.getElementById('pauseButton').addEventListener('click', function() {
-    togglePause();
-});
-
-document.getElementById('restartFromCurrent').addEventListener('click', function() {
-    togglePause();
-});
-
-document.getElementById('restartFromEnd').addEventListener('click', function() {
-    restartFromEnd();
-});
+document.getElementById('pauseButton').addEventListener('click', togglePause);
 </script>
 {% endblock %}
