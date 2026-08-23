@@ -1,5 +1,7 @@
 import functools
 import io
+import threading
+from contextlib import closing
 import tempfile
 import zipfile
 import json
@@ -13,7 +15,7 @@ import multiprocessing
 from datetime import timezone
 
 import pydeepskylog as pds
-from PIL import Image
+from PIL import Image, ImageDraw
 from PiFinder import utils, calc_utils, config
 from PiFinder import timez
 from PiFinder.db.observations_db import (
@@ -26,6 +28,7 @@ from PiFinder.multiproclogging import MultiprocLogging
 
 from flask import (
     Flask,
+    g,
     abort,
     after_this_request,
     request,
@@ -85,6 +88,16 @@ def load_session_secret() -> str:
     except OSError as e:
         logger.warning("Could not persist web session secret: %s", e)
     return secret
+
+
+def placeholder_screen() -> Image.Image:
+    """Image shown when no PiFinder screen is available (e.g. standalone server)."""
+    img = Image.new("RGB", (128, 128), color=(0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((0, 0, 127, 127), outline=(128, 0, 0))
+    for i, line in enumerate(("PiFinder", "no screen", "available")):
+        draw.text((12, 40 + i * 16), line, fill=(255, 0, 0))
+    return img
 
 
 def safe_redirect_target(url, default="/"):
@@ -168,6 +181,9 @@ def server_locale():
 
 
 class Server:
+    NETWORK_STATUS_TTL = 5.0
+    SCREEN_PNG_TTL = 0.1
+
     def __init__(
         self,
         keyboard_queue=None,
@@ -213,6 +229,10 @@ class Server:
         }
 
         self.network = sys_utils.Network()
+        self._net_status_cache: tuple = (None, 0.0)
+        self._net_status_lock = threading.Lock()
+        self._screen_cache: tuple = (None, 0.0)
+        self._screen_lock = threading.Lock()
 
         # Initialize Flask app with absolute template path
         views2_path = os.path.join(os.path.dirname(__file__), "..", "views")
@@ -299,12 +319,13 @@ class Server:
                 logger.error(f"Failed to get solution data: {str(e)}")
 
             # Render the template with available data
+            net = self.network_status()
             return app.jinja_env.get_template("index.html").render(
                 title=gettext("Home"),
                 software_version=software_version,
-                wifi_mode=self.network.wifi_mode(),
-                ip=self.network.local_ip(),
-                network_name=self.network.get_active_label(),
+                wifi_mode=net["wifi_mode"],
+                ip=net["ip"],
+                network_name=net["network_name"],
                 gps_icon=gps_icon,
                 gps_text=gps_text,
                 lat_text=lat_text,
@@ -426,8 +447,7 @@ class Server:
         @auth_required
         def locations_page():
             show_new_form = request.args.get("add_new", 0)
-            cfg = config.Config()
-            cfg.load_config()  # Ensure config is loaded
+            cfg = self._cfg()
             return app.jinja_env.get_template("locations.html").render(
                 title=_("Locations"),
                 locations=cfg.locations.locations,
@@ -470,8 +490,7 @@ class Server:
                     source=source,
                 )
 
-                cfg = config.Config()
-                cfg.load_config()
+                cfg = self._cfg()
                 cfg.locations.add_location(new_location)
                 cfg.save_locations()
 
@@ -481,7 +500,7 @@ class Server:
             except ValueError as e:
                 return app.jinja_env.get_template("locations.html").render(
                     title=_("Locations"),
-                    locations=config.Config().locations.locations,
+                    locations=self._cfg().locations.locations,
                     show_new_form=1,
                     error_message=str(e),
                 )
@@ -490,8 +509,7 @@ class Server:
         @auth_required
         def location_rename(location_id):
             try:
-                cfg = config.Config()
-                cfg.load_config()
+                cfg = self._cfg()
 
                 if not (0 <= location_id < len(cfg.locations.locations)):
                     raise ValueError("Invalid location ID")
@@ -534,7 +552,7 @@ class Server:
             except ValueError as e:
                 return app.jinja_env.get_template("locations.html").render(
                     title=_("Locations"),
-                    locations=config.Config().locations.locations,
+                    locations=self._cfg().locations.locations,
                     show_new_form=0,
                     error_message=str(e),
                 )
@@ -542,8 +560,7 @@ class Server:
         @app.route("/locations/delete/<int:location_id>", methods=["POST"])
         @auth_required
         def location_delete(location_id):
-            cfg = config.Config()
-            cfg.load_config()
+            cfg = self._cfg()
             if 0 <= location_id < len(cfg.locations.locations):
                 location = cfg.locations.locations[location_id]
                 cfg.locations.remove_location(location)
@@ -555,8 +572,7 @@ class Server:
         @app.route("/locations/set_default/<int:location_id>", methods=["POST"])
         @auth_required
         def location_set_default(location_id):
-            cfg = config.Config()
-            cfg.load_config()
+            cfg = self._cfg()
             if 0 <= location_id < len(cfg.locations.locations):
                 location = cfg.locations.locations[location_id]
                 cfg.locations.set_default(location)
@@ -568,8 +584,7 @@ class Server:
         @app.route("/locations/load/<int:location_id>", methods=["POST"])
         @auth_required
         def location_load(location_id):
-            cfg = config.Config()
-            cfg.load_config()  # Ensure config is loaded
+            cfg = self._cfg()
             if 0 <= location_id < len(cfg.locations.locations):
                 location = cfg.locations.locations[location_id]
                 gps_lock(location.latitude, location.longitude, location.height)
@@ -593,12 +608,14 @@ class Server:
                 key_mgmt = "WPA-PSK"
 
             self.network.add_wifi_network(ssid, key_mgmt, psk)
+            self.invalidate_network_status()
             return redirect("/network")
 
         @app.route("/network/delete/<int:network_id>", methods=["POST"])
         @auth_required
         def network_delete(network_id):
             self.network.delete_wifi_network(network_id)
+            self.invalidate_network_status()
             return redirect("/network")
 
         @app.route("/network/update", methods=["POST"])
@@ -611,6 +628,7 @@ class Server:
             self.network.set_wifi_mode(wifi_mode)
             self.network.set_ap_name(ap_name)
             self.network.set_host_name(host_name)
+            self.invalidate_network_status()
 
             applied_host = self.network.get_host_name()
             return app.jinja_env.get_template("network.html").render(
@@ -675,7 +693,7 @@ class Server:
         @auth_required
         def equipment():
             return app.jinja_env.get_template("equipment.html").render(
-                title=_("Equipment"), equipment=config.Config().equipment
+                title=_("Equipment"), equipment=self._cfg().equipment
             )
 
         @app.route(
@@ -683,7 +701,7 @@ class Server:
         )
         @auth_required
         def set_active_instrument(instrument_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
             if not (0 <= instrument_id < len(cfg.equipment.telescopes)):
                 abort(404)
             cfg.equipment.set_active_telescope(cfg.equipment.telescopes[instrument_id])
@@ -702,7 +720,7 @@ class Server:
         @app.route("/equipment/set_active_eyepiece/<int:eyepiece_id>", methods=["POST"])
         @auth_required
         def set_active_eyepiece(eyepiece_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
             if not (0 <= eyepiece_id < len(cfg.equipment.eyepieces)):
                 abort(404)
             cfg.equipment.set_active_eyepiece(cfg.equipment.eyepieces[eyepiece_id])
@@ -722,7 +740,7 @@ class Server:
         @auth_required
         def equipment_import():
             username = request.form.get("dsl_name")
-            cfg = config.Config()
+            cfg = self._cfg()
             if username:
                 instruments = pds.dsl_instruments(username)
                 for instrument in instruments:
@@ -792,7 +810,7 @@ class Server:
                 self.ui_queue.put("reload_config")
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
-                equipment=config.Config().equipment,
+                equipment=self._cfg().equipment,
                 success_message=_(
                     "Equipment Imported, restart your PiFinder to use this new data"
                 ),
@@ -802,7 +820,7 @@ class Server:
         @auth_required
         def edit_eyepiece(eyepiece_id: int):
             if eyepiece_id >= 0:
-                eyepieces = config.Config().equipment.eyepieces
+                eyepieces = self._cfg().equipment.eyepieces
                 if eyepiece_id >= len(eyepieces):
                     abort(404)
                 eyepiece = eyepieces[eyepiece_id]
@@ -818,7 +836,7 @@ class Server:
         @app.route("/equipment/add_eyepiece/<signed_int:eyepiece_id>", methods=["POST"])
         @auth_required
         def equipment_add_eyepiece(eyepiece_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
 
             try:
                 make = request.form.get("make") or ""
@@ -867,14 +885,14 @@ class Server:
 
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
-                equipment=config.Config().equipment,
+                equipment=self._cfg().equipment,
                 success_message=_("Eyepiece added, restart your PiFinder to use"),
             )
 
         @app.route("/equipment/delete_eyepiece/<int:eyepiece_id>", methods=["POST"])
         @auth_required
         def equipment_delete_eyepiece(eyepiece_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
             if not (0 <= eyepiece_id < len(cfg.equipment.eyepieces)):
                 abort(404)
             cfg.equipment.eyepieces.pop(eyepiece_id)
@@ -882,7 +900,7 @@ class Server:
             self.ui_queue.put("reload_config")
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
-                equipment=config.Config().equipment,
+                equipment=self._cfg().equipment,
                 success_message=_(
                     "Eyepiece Deleted, restart your PiFinder to remove from menu"
                 ),
@@ -892,7 +910,7 @@ class Server:
         @auth_required
         def edit_instrument(instrument_id: int):
             if instrument_id >= 0:
-                telescopes = config.Config().equipment.telescopes
+                telescopes = self._cfg().equipment.telescopes
                 if instrument_id >= len(telescopes):
                     abort(404)
                 telescope = telescopes[instrument_id]
@@ -921,7 +939,7 @@ class Server:
         )
         @auth_required
         def equipment_add_instrument(instrument_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
 
             try:
                 make = request.form.get("make") or ""
@@ -979,14 +997,14 @@ class Server:
                 )
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
-                equipment=config.Config().equipment,
+                equipment=self._cfg().equipment,
                 success_message=_("Instrument Added, restart your PiFinder to use"),
             )
 
         @app.route("/equipment/delete_instrument/<int:instrument_id>", methods=["POST"])
         @auth_required
         def equipment_delete_instrument(instrument_id: int):
-            cfg = config.Config()
+            cfg = self._cfg()
             if not (0 <= instrument_id < len(cfg.equipment.telescopes)):
                 abort(404)
             cfg.equipment.telescopes.pop(instrument_id)
@@ -994,7 +1012,7 @@ class Server:
             self.ui_queue.put("reload_config")
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
-                equipment=config.Config().equipment,
+                equipment=self._cfg().equipment,
                 success_message=_(
                     "Instrument Deleted, restart your PiFinder to remove from menu"
                 ),
@@ -1003,61 +1021,14 @@ class Server:
         @app.route("/observations")
         @auth_required
         def obs_sessions():
-            obs_db = ObservationsDatabase()
-            if request.args.get("download", 0) == "1":
-                # Download all as TSV
-                observations = obs_db.observations_as_tsv()
-
-                response = make_response(observations)
-                response.headers["Content-Disposition"] = (
-                    "attachment; filename=observations.tsv"
-                )
-                response.headers["Content-Type"] = "text/tab-separated-values"
-                return response
-
-            # regular html page of sessions
-            sessions = obs_db.get_sessions()
-            metadata = {
-                "sess_count": len(sessions),
-                "object_count": sum(x["observations"] for x in sessions),
-                "total_duration": sum(x["duration"] for x in sessions),
-            }
-            return app.jinja_env.get_template("obs_sessions.html").render(
-                title=_("Observations"), sessions=sessions, metadata=metadata
-            )
+            with closing(ObservationsDatabase()) as obs_db:
+                return self._obs_sessions(app, obs_db)
 
         @app.route("/observations/<session_id>")
         @auth_required
         def obs_session(session_id):
-            obs_db = ObservationsDatabase()
-            if request.args.get("download", 0) == "1":
-                # Download all as TSV
-                observations = obs_db.observations_as_tsv(session_id)
-
-                response = make_response(observations)
-                response.headers["Content-Disposition"] = (
-                    f"attachment; filename=observations_{session_id}.tsv"
-                )
-                response.headers["Content-Type"] = "text/tab-separated-values"
-                return response
-
-            sessions = obs_db.get_sessions(session_id)
-            if not sessions:
-                abort(404)
-            session = sessions[0]
-            objects = obs_db.get_logs_by_session(session_id)
-            ret_objects = []
-            for obj in objects:
-                obj_ = dict(obj)
-                try:
-                    obj_notes = json.loads(obj_["notes"] or "{}")
-                except (TypeError, ValueError):
-                    obj_notes = {"notes": obj_["notes"]}
-                obj_["notes"] = [f"{key}: {value}" for key, value in obj_notes.items()]
-                ret_objects.append(obj_)
-            return app.jinja_env.get_template("obs_session_log.html").render(
-                title=_("Session Log"), session=session, objects=ret_objects
-            )
+            with closing(ObservationsDatabase()) as obs_db:
+                return self._obs_session(app, obs_db, session_id)
 
         @app.route("/tools")
         @auth_required
@@ -1292,22 +1263,10 @@ class Server:
 
         @app.route("/image")
         def serve_pil_image():
-            empty_img = Image.new(
-                "RGB", (60, 30), color=(73, 109, 137)
-            )  # create an image using PIL
-            img = None
-            try:
-                img = self.shared_state.screen()
-            except (BrokenPipeError, EOFError):
-                pass
-
-            if img is None:
-                img = empty_img
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format="PNG")  # adjust for your image format
-            img_byte_arr.seek(0)
-
-            return send_file(img_byte_arr, mimetype="image/png")
+            response = make_response(self.screen_png())
+            response.headers["Content-Type"] = "image/png"
+            response.headers["Cache-Control"] = "no-store"
+            return response
 
         try:
             from PiFinder.api_extensions import register_api_routes
@@ -1338,6 +1297,112 @@ class Server:
 
         # Store the app reference for running
         self.app = app
+
+    def _cfg(self):
+        """One Config per request: the JSON files are read once per request."""
+        if "pifinder_config" not in g:
+            g.pifinder_config = config.Config()
+        return g.pifinder_config
+
+    def network_status(self) -> dict:
+        """Wifi mode, IP and active network label, cached for a few seconds.
+
+        Each of these asks NetworkManager for its connection list, which is
+        slow on the Pi and was done several times per home-page load.
+        """
+        now = time.monotonic()
+        with self._net_status_lock:
+            cached, stamp = self._net_status_cache
+            if cached is not None and now - stamp < self.NETWORK_STATUS_TTL:
+                return cached
+            status = {
+                "wifi_mode": self.network.wifi_mode(),
+                "ip": self.network.local_ip(),
+                "network_name": self.network.get_active_label(),
+            }
+            self._net_status_cache = (status, now)
+            return status
+
+    def invalidate_network_status(self):
+        with self._net_status_lock:
+            self._net_status_cache = (None, 0.0)
+
+    def screen_png(self) -> bytes:
+        """PNG bytes of the current screen, re-encoded at most every 100 ms.
+
+        The remote page polls at ~10 Hz; without this every poll pays for a
+        shared-state round trip and a PNG encode.
+        """
+        now = time.monotonic()
+        with self._screen_lock:
+            png, stamp = self._screen_cache
+            if png is not None and now - stamp < self.SCREEN_PNG_TTL:
+                return png
+            img = None
+            try:
+                img = self.shared_state.screen()
+            except (BrokenPipeError, EOFError):
+                pass
+            if img is None:
+                img = placeholder_screen()
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            png = buf.getvalue()
+            self._screen_cache = (png, now)
+            return png
+
+    def _obs_sessions(self, app, obs_db):
+        if request.args.get("download", 0) == "1":
+            # Download all as TSV
+            observations = obs_db.observations_as_tsv()
+
+            response = make_response(observations)
+            response.headers["Content-Disposition"] = (
+                "attachment; filename=observations.tsv"
+            )
+            response.headers["Content-Type"] = "text/tab-separated-values"
+            return response
+
+        # regular html page of sessions
+        sessions = obs_db.get_sessions()
+        metadata = {
+            "sess_count": len(sessions),
+            "object_count": sum(x["observations"] for x in sessions),
+            "total_duration": sum(x["duration"] for x in sessions),
+        }
+        return app.jinja_env.get_template("obs_sessions.html").render(
+            title=_("Observations"), sessions=sessions, metadata=metadata
+        )
+
+    def _obs_session(self, app, obs_db, session_id):
+        if request.args.get("download", 0) == "1":
+            # Download all as TSV
+            observations = obs_db.observations_as_tsv(session_id)
+
+            response = make_response(observations)
+            response.headers["Content-Disposition"] = (
+                f"attachment; filename=observations_{session_id}.tsv"
+            )
+            response.headers["Content-Type"] = "text/tab-separated-values"
+            return response
+
+        sessions = obs_db.get_sessions(session_id)
+        if not sessions:
+            abort(404)
+        session = sessions[0]
+        objects = obs_db.get_logs_by_session(session_id)
+        ret_objects = []
+        for obj in objects:
+            obj_ = dict(obj)
+            try:
+                obj_notes = json.loads(obj_["notes"] or "{}")
+            except (TypeError, ValueError):
+                obj_notes = {"notes": obj_["notes"]}
+            obj_["notes"] = [f"{key}: {value}" for key, value in obj_notes.items()]
+            ret_objects.append(obj_)
+        return app.jinja_env.get_template("obs_session_log.html").render(
+            title=_("Session Log"), session=session, objects=ret_objects
+        )
 
     def run(self):
         # If the PiFinder software is running as a service

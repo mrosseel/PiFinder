@@ -41,7 +41,7 @@ class NetworkBase(ABC):
         # In AP mode the only address is the AP's own — unless an ethernet
         # cable is plugged in, in which case the device is really reachable on
         # the wired IP, so fall through to it.
-        if self._wifi_mode == "AP" and not self.is_wired_connected():
+        if self.wifi_mode() == "AP" and not self.is_wired_connected():
             return "10.10.10.1"
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -73,7 +73,7 @@ class NetworkBase(ABC):
         return self._wifi_networks
 
     def set_wifi_mode(self, mode: str) -> None:
-        if mode == self._wifi_mode:
+        if mode == self.wifi_mode():
             return
         if mode == "AP":
             self._go_ap()

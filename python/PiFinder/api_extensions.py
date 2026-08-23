@@ -15,18 +15,25 @@ Usage:
 Dependencies: No additional dependencies. Reuses PiFinder's existing Flask / PIL / shared state.
 """
 
+import base64
 import functools
 import io
 import json
 import logging
+import math
 import os
 import signal
 import threading
 
+import numpy as np
 from flask import request, session, Response
 from PIL import Image
+from skyfield.positionlib import position_of_radec
 
+from PiFinder import utils
+from PiFinder.calc_utils import sf_utils
 from PiFinder.optics import OpticalTrainResolver
+from PiFinder.plot import Starfield
 
 logger = logging.getLogger("PiFinderAPI")
 
@@ -166,6 +173,8 @@ def register_api_routes(app, server_instance, require_auth=False):
             loc = ss.location()
             sol = ss.solution()
             dt_utc = ss.datetime()
+            imu = ss.imu()
+            sqm = ss.sqm()
 
             data = {
                 "power_state": ss.power_state(),
@@ -177,8 +186,8 @@ def register_api_routes(app, server_instance, require_auth=False):
                     "utc": dt_utc.isoformat() if dt_utc else None,
                     "local": ss.local_datetime().isoformat() if dt_utc else None,
                 },
-                "imu": ss.imu().to_dict() if ss.imu() else None,
-                "sqm": ss.sqm().to_dict() if ss.sqm() else None,
+                "imu": imu.to_dict() if imu else None,
+                "sqm": sqm.to_dict() if sqm else None,
                 "software_version": _get_version(server_instance),
             }
             return _json_response(data)
@@ -245,15 +254,11 @@ def register_api_routes(app, server_instance, require_auth=False):
             # Add Alt/Az if location and datetime are ready
             if ss.altaz_ready():
                 try:
-                    from PiFinder.calc_utils import sf_utils
-
                     ts = sf_utils.ts
                     dt = ss.datetime()
                     aligned = sol.pointing.aligned.estimate
                     ra_h = float(aligned.RA) / 15.0
                     dec_d = float(aligned.Dec)
-                    from skyfield.positionlib import position_of_radec
-
                     p = position_of_radec(
                         ra_hours=ra_h, dec_degrees=dec_d, epoch=ts.J2000
                     )
@@ -328,8 +333,6 @@ def register_api_routes(app, server_instance, require_auth=False):
                 in a 2048×2048 coordinate system.
         """
         try:
-            import base64
-
             ss = server_instance.shared_state
 
             # --------------------------------------------------
@@ -733,8 +736,6 @@ def register_api_routes(app, server_instance, require_auth=False):
             if hasattr(raw, "save"):
                 img = raw.convert("RGB") if raw.mode != "RGB" else raw
             else:
-                import numpy as np
-
                 arr = np.asarray(raw)
                 if arr.ndim == 2:
                     img = Image.fromarray(arr, mode="L").convert("RGB")
@@ -749,23 +750,21 @@ def register_api_routes(app, server_instance, require_auth=False):
     def api_camera_debug():
         """Return the latest debug frame from the solver_debug_dumps directory"""
         try:
-            from pathlib import Path
-
-            debug_dir = Path("/home/pifinder/PiFinder_data/solver_debug_dumps")
-            if not debug_dir.exists():
-                debug_dir = Path("solver_debug_dumps")
+            debug_dir = utils.debug_dump_dir
             if not debug_dir.exists():
                 return _json_response({"note": "Debug dump directory not found"}, 503)
 
-            files = sorted(
-                debug_dir.glob("*.png"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if not files:
+            latest = None
+            latest_mtime = 0.0
+            for entry in os.scandir(debug_dir):
+                if entry.name.endswith(".png") and entry.is_file():
+                    mtime = entry.stat().st_mtime
+                    if mtime > latest_mtime:
+                        latest, latest_mtime = entry.path, mtime
+            if latest is None:
                 return _json_response({"note": "No debug frames available"}, 503)
 
-            with open(files[0], "rb") as f:
+            with open(latest, "rb") as f:
                 return Response(f.read(), content_type="image/png")
         except Exception as e:
             logger.error("api/camera/debug error: %s", e)
@@ -857,15 +856,22 @@ def register_api_routes(app, server_instance, require_auth=False):
 
 
 def _get_version(server_instance) -> str:
-    """Try to read the PiFinder software version"""
+    """The PiFinder software version, read once and cached on the server."""
+    cached = getattr(server_instance, "_api_version_cache", None)
+    if cached:
+        return cached
+    version = "Unknown"
     try:
         version_txt = getattr(server_instance, "version_txt", None)
         if version_txt:
             with open(version_txt, "r") as f:
-                return f.read().strip()
+                version = f.read().strip() or "Unknown"
+        else:
+            version = getattr(server_instance, "_software_version", None) or "Unknown"
     except Exception:
         pass
-    return "Unknown"
+    server_instance._api_version_cache = version
+    return version
 
 
 def _safe_json_value(value):
@@ -873,9 +879,6 @@ def _safe_json_value(value):
     Convert pandas / NumPy / NaN objects into JSON-serializable objects.
     """
     try:
-        import math
-        import numpy as np
-
         if value is None:
             return None
 
@@ -974,6 +977,10 @@ class _ApiGrayColors:
         return (v, v, v)
 
 
+_STARFIELD_FOV_STEP = 0.5
+_STARFIELD_LOCK = threading.Lock()
+
+
 def _get_api_starfield(
     server_instance,
     resolution=(1088, 1088),
@@ -991,31 +998,31 @@ def _get_api_starfield(
         PiFinder's Web Server object usually does not directly hold the align app's starfield,
         so creating one in the API layer is more stable.
     """
+    # The live solve FOV drifts a little with every plate solve; round it so
+    # the cache is not rebuilt on every request.
+    fov = round(float(fov) / _STARFIELD_FOV_STEP) * _STARFIELD_FOV_STEP
     cache_key = (
         int(resolution[0]),
         int(resolution[1]),
         float(mag_limit),
-        float(fov),
+        fov,
     )
 
-    cached_key = getattr(server_instance, "_api_starfield_cache_key", None)
-    cached_obj = getattr(server_instance, "_api_starfield_cache", None)
+    with _STARFIELD_LOCK:
+        cached_key = getattr(server_instance, "_api_starfield_cache_key", None)
+        cached_obj = getattr(server_instance, "_api_starfield_cache", None)
 
-    if cached_key == cache_key and cached_obj is not None:
-        return cached_obj
+        if cached_key == cache_key and cached_obj is not None:
+            return cached_obj
 
-    from PiFinder.plot import Starfield
+        starfield = Starfield(
+            colors=_ApiGrayColors(),
+            resolution=resolution,
+            mag_limit=mag_limit,
+            fov=fov,
+        )
 
-    colors = _ApiGrayColors()
-
-    starfield = Starfield(
-        colors=colors,
-        resolution=resolution,
-        mag_limit=mag_limit,
-        fov=fov,
-    )
-
-    server_instance._api_starfield_cache_key = cache_key
-    server_instance._api_starfield_cache = starfield
+        server_instance._api_starfield_cache_key = cache_key
+        server_instance._api_starfield_cache = starfield
 
     return starfield

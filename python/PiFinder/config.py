@@ -115,8 +115,12 @@ class Config:
         """
         Write config to config file
         """
-        with open(self.config_file_path, "w") as config_file:
+        # Write to a temp file and rename so a crash mid-write cannot leave
+        # a truncated config.json behind.
+        tmp_path = self.config_file_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as config_file:
             json.dump(self._config_dict, config_file, indent=4)
+        os.replace(tmp_path, self.config_file_path)
 
     def set_option(self, option, value):
         if option.startswith("session."):

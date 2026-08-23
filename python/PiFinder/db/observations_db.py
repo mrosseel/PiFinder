@@ -399,47 +399,32 @@ class ObservationsDatabase(Database):
         so this does some sanitizing of the data
 
         """
-        q = """
-                Select
-                    uid,
-                    timezone,
-                    datetime(min(start_time_local), "unixepoch") as start_time_local,
-                    avg(lat) as lat,
-                    avg(lon) as lon
-                from obs_sessions
-            """
-        if session_uid is not None:
-            # add in a where clause
-            q += """
-                where uid= :sess_uid
-            """
-
-        q += """
-                group by 1,2
+        where_clause = "where s.uid = :sess_uid" if session_uid is not None else ""
+        q = f"""
+                select
+                    s.uid,
+                    s.timezone,
+                    datetime(min(s.start_time_local), "unixepoch") as start_time_local,
+                    avg(s.lat) as lat,
+                    avg(s.lon) as lon,
+                    o.observations,
+                    o.duration
+                from obs_sessions s
+                join (
+                    select
+                        session_uid,
+                        count(*) as observations,
+                        (max(obs_time_local) - min(obs_time_local)) / 60.0 / 60.0
+                            as duration
+                    from obs_objects
+                    group by session_uid
+                ) o on o.session_uid = s.uid
+                {where_clause}
+                group by s.uid, s.timezone
                 order by start_time_local
             """
-
-        sessions = self.cursor.execute(q, {"sess_uid": session_uid}).fetchall()
-
-        # now enrich them....
-        ret_sessions = []
-        for sess in sessions:
-            sess = dict(sess)
-            _sess_info = self.cursor.execute(
-                """
-                    select
-                        count(*) as observations,
-                        (max(obs_time_local) - min(obs_time_local)) / 60 /60 as duration
-                    from obs_objects
-                    where session_uid= :sess_uid
-                """,
-                {"sess_uid": sess["UID"]},
-            ).fetchone()
-            sess = sess | dict(_sess_info)
-            if sess["observations"] > 0:
-                ret_sessions.append(sess)
-
-        return ret_sessions
+        rows = self.cursor.execute(q, {"sess_uid": session_uid}).fetchall()
+        return [dict(row) for row in rows]
 
     def get_session(self, session_uid):
         """
