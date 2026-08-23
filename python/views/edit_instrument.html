@@ -11,13 +11,7 @@
     </div>
 </div>
 
-{% if error_message %}
-<div class="row">
-    <div class="col s12">
-        <p class="red-text">{{ error_message }}</p>
-    </div>
-</div>
-{% endif %}
+{% include "_flash.html" %}
 
 <form action="/equipment/add_instrument/{{ instrument_id }}" method="post" id="add_instrument" class="col s12">
     <div class="row">

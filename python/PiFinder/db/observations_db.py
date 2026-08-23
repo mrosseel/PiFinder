@@ -33,6 +33,13 @@ def _database_fingerprint(path: Path) -> tuple[int, int]:
     return stat.st_mtime_ns, stat.st_size
 
 
+def _tsv_field(value) -> str:
+    """Render a value as one TSV cell: no tabs or line breaks, NULL as empty."""
+    if value is None:
+        return ""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
 class ObservationsDatabase(Database):
     def __init__(self, db_path: Optional[Path] = None):
         # Resolved at call time, not as a default argument: an import-time
@@ -495,8 +502,8 @@ class ObservationsDatabase(Database):
                     obj["obs_time_local"],
                     obj["catalog"],
                     str(obj["sequence"]),
-                    obj["notes"],
+                    _tsv_field(obj["notes"]),
                 ]
-                rows_list.append("\t".join(object_row))
+                rows_list.append("\t".join(str(v) for v in object_row))
 
         return "\n".join(rows_list)

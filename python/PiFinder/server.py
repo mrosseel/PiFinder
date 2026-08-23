@@ -1,5 +1,7 @@
 import functools
 import io
+import tempfile
+import zipfile
 import json
 import logging
 import secrets
@@ -18,11 +20,14 @@ from PiFinder.db.observations_db import (
     ObservationsDatabase,
 )
 from PiFinder.equipment import Telescope, Eyepiece
+from PiFinder.locations import Location
 from PiFinder.keyboard_interface import KeyboardInterface
 from PiFinder.multiproclogging import MultiprocLogging
 
 from flask import (
     Flask,
+    abort,
+    after_this_request,
     request,
     jsonify,
     send_file,
@@ -102,6 +107,20 @@ def parse_coordinate(value, field_name):
         return float(str(value).strip().replace(",", "."))
     except ValueError:
         raise ValueError(_("%s must be a number") % field_name)
+
+
+def parse_utc_datetime(date_str, time_str):
+    """Parse ``YYYY-MM-DD`` + ``H:M[:S]`` (zero padding optional) as UTC."""
+    parts = [int(p) for p in time_str.strip().split(":")]
+    if len(parts) == 2:
+        parts.append(0)
+    if len(parts) != 3:
+        raise ValueError(_("Time must be HH:MM:SS"))
+    hh, mm, ss = parts
+    datetime_obj = timez.parse(
+        f"{date_str.strip()} {hh:02d}:{mm:02d}:{ss:02d}", "%Y-%m-%d %H:%M:%S"
+    )
+    return datetime_obj.replace(tzinfo=timezone.utc)
 
 
 def auth_required(func):
@@ -220,29 +239,7 @@ class Server:
         app.jinja_env.add_extension("jinja2.ext.i18n")
 
         # Use PiFinder's global gettext function in templates
-        import builtins
-
         app.jinja_env.globals["_"] = builtins._
-
-        # # Create a simple gettext function for templates that works without translation files
-        # def simple_gettext(text):
-        #     return text
-
-        # def simple_ngettext(singular, plural, n):
-        #     return singular if n == 1 else plural
-
-        # app.jinja_env.install_gettext_callables(simple_gettext, simple_ngettext, newstyle=True)
-
-        # # Create a context-safe translation function
-        # def translate(text):
-        #     try:
-        #         from flask_babel import gettext
-        #         return gettext(text)
-        #     except Exception:
-        #         return text
-
-        # # Make translation function available to routes
-        # app.jinja_env.globals['_'] = translate
 
         # Static files routes. send_from_directory refuses paths that escape
         # the given directory.
@@ -390,21 +387,39 @@ class Server:
         @app.route("/gps/update", methods=["POST"])
         @auth_required
         def gps_update():
-            lat = request.form.get("latitudeDecimal")
-            lon = request.form.get("longitudeDecimal")
-            altitude = request.form.get("altitude")
             date_req = request.form.get("date")
             time_req = request.form.get("time")
-            gps_lock(float(lat), float(lon), float(altitude))
-            if time_req and date_req:
-                datetime_str = f"{date_req} {time_req}"
-                datetime_obj = timez.parse(datetime_str, "%Y-%m-%d %H:%M:%S")
-                datetime_utc = datetime_obj.replace(tzinfo=timezone.utc)
+            try:
+                lat = parse_coordinate(
+                    request.form.get("latitudeDecimal"), _("Latitude")
+                )
+                lon = parse_coordinate(
+                    request.form.get("longitudeDecimal"), _("Longitude")
+                )
+                altitude = parse_coordinate(request.form.get("altitude"), _("Altitude"))
+                if not (-90 <= lat <= 90):
+                    raise ValueError(_("Latitude must be between -90 and 90"))
+                if not (-180 <= lon <= 180):
+                    raise ValueError(_("Longitude must be between -180 and 180"))
+                datetime_utc = None
+                if time_req and date_req:
+                    datetime_utc = parse_utc_datetime(date_req, time_req)
+            except ValueError as e:
+                self.update_gps()
+                return app.jinja_env.get_template("gps.html").render(
+                    title=_("GPS"),
+                    show_new_form=0,
+                    lat=self.lat,
+                    lon=self.lon,
+                    altitude=self.altitude,
+                    error_message=str(e),
+                )
+            gps_lock(lat, lon, altitude)
+            if datetime_utc is not None:
                 time_lock(datetime_utc)
             logger.debug(
                 "GPS update: %s, %s, %s, %s, %s", lat, lon, altitude, date_req, time_req
             )
-            time.sleep(1)  # give the gps thread a chance to update
             return redirect("/")
 
         @app.route("/locations")
@@ -445,8 +460,6 @@ class Server:
                     )
                 if not (0 <= error_in_m <= 10000):
                     raise ValueError(_("Error must be between 0 and 10000 meters"))
-
-                from PiFinder.locations import Location
 
                 new_location = Location(
                     name=name,
@@ -565,8 +578,15 @@ class Server:
         @app.route("/network/add", methods=["POST"])
         @auth_required
         def network_add():
-            ssid = request.form.get("ssid")
-            psk = request.form.get("psk")
+            ssid = (request.form.get("ssid") or "").strip()
+            psk = request.form.get("psk") or ""
+            if not ssid:
+                return app.jinja_env.get_template("network.html").render(
+                    title=_("Network"),
+                    net=self.network,
+                    show_new_form=1,
+                    error_message=_("Network name is required"),
+                )
             if len(psk) < 8:
                 key_mgmt = "NONE"
             else:
@@ -664,6 +684,8 @@ class Server:
         @auth_required
         def set_active_instrument(instrument_id: int):
             cfg = config.Config()
+            if not (0 <= instrument_id < len(cfg.equipment.telescopes)):
+                abort(404)
             cfg.equipment.set_active_telescope(cfg.equipment.telescopes[instrument_id])
             cfg.save_equipment()
             self.ui_queue.put("reload_config")
@@ -681,6 +703,8 @@ class Server:
         @auth_required
         def set_active_eyepiece(eyepiece_id: int):
             cfg = config.Config()
+            if not (0 <= eyepiece_id < len(cfg.equipment.eyepieces)):
+                abort(404)
             cfg.equipment.set_active_eyepiece(cfg.equipment.eyepieces[eyepiece_id])
             cfg.save_equipment()
             self.ui_queue.put("reload_config")
@@ -778,7 +802,10 @@ class Server:
         @auth_required
         def edit_eyepiece(eyepiece_id: int):
             if eyepiece_id >= 0:
-                eyepiece = config.Config().equipment.eyepieces[eyepiece_id]
+                eyepieces = config.Config().equipment.eyepieces
+                if eyepiece_id >= len(eyepieces):
+                    abort(404)
+                eyepiece = eyepieces[eyepiece_id]
             else:
                 eyepiece = Eyepiece(
                     make="", name="", focal_length_mm=0, afov=0, field_stop=0
@@ -809,18 +836,34 @@ class Server:
                 )
 
                 if eyepiece_id >= 0:
+                    if eyepiece_id >= len(cfg.equipment.eyepieces):
+                        abort(404)
                     cfg.equipment.eyepieces[eyepiece_id] = eyepiece
                 else:
                     try:
-                        index = cfg.equipment.telescopes.index(eyepiece)
+                        index = cfg.equipment.eyepieces.index(eyepiece)
                         cfg.equipment.eyepieces[index] = eyepiece
                     except ValueError:
                         cfg.equipment.eyepieces.append(eyepiece)
 
                 cfg.save_equipment()
                 self.ui_queue.put("reload_config")
-            except Exception as e:
+            except ValueError as e:
                 logger.error(f"Error adding eyepiece: {e}")
+                return app.jinja_env.get_template("edit_eyepiece.html").render(
+                    title=_("Edit Eyepiece"),
+                    eyepiece=Eyepiece(
+                        make=make,
+                        name=name,
+                        focal_length_mm=0,
+                        afov=0,
+                        field_stop=0,
+                    ),
+                    eyepiece_id=eyepiece_id,
+                    error_message=_(
+                        "Focal length, apparent FOV and field stop must be numbers"
+                    ),
+                )
 
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
@@ -832,6 +875,8 @@ class Server:
         @auth_required
         def equipment_delete_eyepiece(eyepiece_id: int):
             cfg = config.Config()
+            if not (0 <= eyepiece_id < len(cfg.equipment.eyepieces)):
+                abort(404)
             cfg.equipment.eyepieces.pop(eyepiece_id)
             cfg.save_equipment()
             self.ui_queue.put("reload_config")
@@ -847,7 +892,10 @@ class Server:
         @auth_required
         def edit_instrument(instrument_id: int):
             if instrument_id >= 0:
-                telescope = config.Config().equipment.telescopes[instrument_id]
+                telescopes = config.Config().equipment.telescopes
+                if instrument_id >= len(telescopes):
+                    abort(404)
+                telescope = telescopes[instrument_id]
             else:
                 telescope = Telescope(
                     make="",
@@ -896,6 +944,8 @@ class Server:
                     reverse_arrow_b=bool(request.form.get("reverse_arrow_b")),
                 )
                 if instrument_id >= 0:
+                    if instrument_id >= len(cfg.equipment.telescopes):
+                        abort(404)
                     cfg.equipment.telescopes[instrument_id] = instrument
                 else:
                     try:
@@ -906,8 +956,27 @@ class Server:
 
                 cfg.save_equipment()
                 self.ui_queue.put("reload_config")
-            except Exception as e:
+            except ValueError as e:
                 logger.error(f"Error adding instrument: {e}")
+                return app.jinja_env.get_template("edit_instrument.html").render(
+                    title=_("Edit Instrument"),
+                    telescope=Telescope(
+                        make=make,
+                        name=name,
+                        aperture_mm=0,
+                        focal_length_mm=0,
+                        obstruction_perc=0,
+                        mount_type=mount_type,
+                        flip_image=False,
+                        flop_image=False,
+                        reverse_arrow_a=False,
+                        reverse_arrow_b=False,
+                    ),
+                    instrument_id=instrument_id,
+                    error_message=_(
+                        "Aperture, focal length and obstruction must be numbers"
+                    ),
+                )
             return app.jinja_env.get_template("equipment.html").render(
                 title=_("Equipment"),
                 equipment=config.Config().equipment,
@@ -918,6 +987,8 @@ class Server:
         @auth_required
         def equipment_delete_instrument(instrument_id: int):
             cfg = config.Config()
+            if not (0 <= instrument_id < len(cfg.equipment.telescopes)):
+                abort(404)
             cfg.equipment.telescopes.pop(instrument_id)
             cfg.save_equipment()
             self.ui_queue.put("reload_config")
@@ -941,7 +1012,7 @@ class Server:
                 response.headers["Content-Disposition"] = (
                     "attachment; filename=observations.tsv"
                 )
-                response.headers["Content-Type"] = "text/tsv"
+                response.headers["Content-Type"] = "text/tab-separated-values"
                 return response
 
             # regular html page of sessions
@@ -967,10 +1038,13 @@ class Server:
                 response.headers["Content-Disposition"] = (
                     f"attachment; filename=observations_{session_id}.tsv"
                 )
-                response.headers["Content-Type"] = "text/tsv"
+                response.headers["Content-Type"] = "text/tab-separated-values"
                 return response
 
-            session = obs_db.get_sessions(session_id)[0]
+            sessions = obs_db.get_sessions(session_id)
+            if not sessions:
+                abort(404)
+            session = sessions[0]
             objects = obs_db.get_logs_by_session(session_id)
             ret_objects = []
             for obj in objects:
@@ -998,8 +1072,6 @@ class Server:
         @app.route("/logs/stream")
         @auth_required
         def stream_logs():
-            import time
-
             TAIL_BYTES = 100 * 1024  # serve only the last 100 KB on first load
             t0 = time.monotonic()
             try:
@@ -1051,9 +1123,6 @@ class Server:
         @app.route("/logs/download")
         @auth_required
         def download_logs():
-            import zipfile
-            import tempfile
-
             try:
                 # Create a temporary zip file
                 timestamp = timez.local_now().strftime("%Y%m%d_%H%M%S")
@@ -1073,11 +1142,11 @@ class Server:
                             file_path = os.path.join(log_dir, filename)
                             zipf.write(file_path, filename)
 
-                # Send the zip file
+                @after_this_request
                 def remove_file(response):
                     try:
                         os.remove(zip_path)
-                    except Exception:
+                    except OSError:
                         pass
                     return response
 
@@ -1240,14 +1309,6 @@ class Server:
 
             return send_file(img_byte_arr, mimetype="image/png")
 
-        # # If you want to see a log of all requests for debugging, you can uncomment this:
-        # @app.after_request
-        # def log_request(response):
-        #     logger.debug(
-        #         "%s %s %s", request.method, request.path, response.status_code
-        #     )
-        #     return response
-
         try:
             from PiFinder.api_extensions import register_api_routes
 
@@ -1270,8 +1331,8 @@ class Server:
             self.gps_queue.put(msg)
             logger.debug("Putting location msg on gps_queue: {msg}")
 
-        def time_lock(time=timez.local_now()):
-            msg = ("time", time)
+        def time_lock(time=None):
+            msg = ("time", time or timez.local_now())
             self.gps_queue.put(msg)
             logger.debug("Putting time msg on gps_queue: {msg}")
 

@@ -6,6 +6,7 @@
         <h5 class="grey-text">{{ _('GPS Settings') }}</h5>
   </div>
 </div>
+{% include "_flash.html" %}
 <div class="card grey darken-2">
   <div class="card-content">
     <form action="/gps/update" method="post" id="gps_form" class="col s12">
@@ -123,7 +124,8 @@ function focusFirstDMSField() {
 function setBrowserDateTime() {
     var now = new Date();
     var dateString = now.toISOString().split('T')[0]; // Extract date in YYYY-MM-DD format
-    var timeString = now.getUTCHours() + ":" + now.getUTCMinutes() + ":" + now.getUTCSeconds();
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    var timeString = pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds());
 
     document.getElementById("date").value = dateString;
     document.getElementById("time").value = timeString;

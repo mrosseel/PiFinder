@@ -1,0 +1,14 @@
+{% if error_message %}
+<div class="row flash-message">
+  <div class="col s12">
+    <p class="red-text" role="alert">{{ error_message }}</p>
+  </div>
+</div>
+{% endif %}
+{% if status_message or success_message %}
+<div class="row flash-message">
+  <div class="col s12">
+    <p class="green-text" role="status"><b>{{ status_message or success_message }}</b></p>
+  </div>
+</div>
+{% endif %}
