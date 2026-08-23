@@ -8,8 +8,8 @@
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     padding: 15px;
     border-radius: 4px;
-    height: 600px;
-    overflow-y: auto;
+    height: min(600px, 70vh);
+    overflow: auto;
     margin-bottom: 20px;
     position: relative;
     -webkit-overflow-scrolling: touch;
@@ -21,7 +21,6 @@
     line-height: 1.4;
     padding: 1px 0;
     min-height: 20px;
-    overflow-x: auto;
   }
   .log-content {
     width: max-content;
