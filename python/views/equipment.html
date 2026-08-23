@@ -91,20 +91,22 @@
         <td>{{ instrument.reverse_arrow_a }}</td>
         <td>{{ instrument.reverse_arrow_b }}</td>
         <td>
-                <label>
-                    <a href="/equipment/set_active_instrument/{{ loop.index0 }}">
-                        <input type="radio"
+                <form method="post" action="/equipment/set_active_instrument/{{ loop.index0 }}" class="inline-form">
+                    <label>
+                        <input type="radio" name="active_instrument" onchange="this.form.submit()"
                         {% if equipment.active_telescope == instrument %}
                             checked
                         {% endif %}
                         />
                         <span></span>
-                    </a>
-                </label>
+                    </label>
+                </form>
         </td>
         <td>
             <a href="/equipment/edit_instrument/{{ loop.index0 }}"><i class="material-icons">edit</i></a>
-            <a href="/equipment/delete_instrument/{{ loop.index0 }}"><i class="material-icons">delete</i></a>
+            <form method="post" action="/equipment/delete_instrument/{{ loop.index0 }}" class="inline-form">
+                <button type="submit" class="btn-flat icon-button" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></button>
+            </form>
        </td>
     </tr>
     {% endfor %}
@@ -130,20 +132,22 @@
         <td>{{ eyepiece.afov }}</td>
         <td>{{ eyepiece.field_stop }}</td>
         <td>
-                <label>
-                    <a href="/equipment/set_active_eyepiece/{{ loop.index0 }}">
-                        <input type="radio"
+                <form method="post" action="/equipment/set_active_eyepiece/{{ loop.index0 }}" class="inline-form">
+                    <label>
+                        <input type="radio" name="active_eyepiece" onchange="this.form.submit()"
                         {% if equipment.active_eyepiece == eyepiece %}
                             checked
                         {% endif %}
                         />
                         <span></span>
-                    </a>
-                </label>
+                    </label>
+                </form>
         </td>
         <td>
             <a href="/equipment/edit_eyepiece/{{ loop.index0 }}"><i class="material-icons">edit</i></a>
-            <a href="/equipment/delete_eyepiece/{{ loop.index0 }}"><i class="material-icons">delete</i></a>
+            <form method="post" action="/equipment/delete_eyepiece/{{ loop.index0 }}" class="inline-form">
+                <button type="submit" class="btn-flat icon-button" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></button>
+            </form>
         </td>
     </tr>
     {% endfor %}

@@ -282,7 +282,7 @@ def test_equipment_add_instrument_functionality(driver):
 
     # Now delete the test instrument to clean up.
     delete_link = rows[test_instrument_row_index].find_element(
-        By.CSS_SELECTOR, "a[href*='delete_instrument']"
+        By.CSS_SELECTOR, "form[action*='delete_instrument'] button"
     )
     old_instruments_table = instruments_table
     delete_link.click()
@@ -384,7 +384,7 @@ def test_equipment_add_eyepiece_functionality(driver):
 
     # Now delete the test eyepiece to clean up.
     delete_link = rows[test_eyepiece_row_index].find_element(
-        By.CSS_SELECTOR, "a[href*='delete_eyepiece']"
+        By.CSS_SELECTOR, "form[action*='delete_eyepiece'] button"
     )
     old_eyepieces_table = eyepieces_table
     delete_link.click()
@@ -457,7 +457,7 @@ def test_equipment_select_active_instrument(driver):
 
     # Click the radio button link to set this instrument as active
     radio_link = target_row.find_element(
-        By.CSS_SELECTOR, "a[href*='set_active_instrument']"
+        By.CSS_SELECTOR, "form[action*='set_active_instrument'] label"
     )
     radio_link.click()
 
@@ -525,7 +525,7 @@ def test_equipment_select_active_eyepiece(driver):
 
     # Click the radio button link to set this eyepiece as active
     radio_link = target_row.find_element(
-        By.CSS_SELECTOR, "a[href*='set_active_eyepiece']"
+        By.CSS_SELECTOR, "form[action*='set_active_eyepiece'] label"
     )
     radio_link.click()
 

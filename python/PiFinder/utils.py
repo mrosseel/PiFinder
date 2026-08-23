@@ -137,16 +137,32 @@ comet_file = data_dir / "comets.txt"
 # selection is persisted in the writable data dir (like config.json), stored as
 # a bare filename so it survives upgrades (no immutable store path is baked in).
 logconf_dir = pifinder_dir / "python"
+# Uploaded presets go to the writable data dir (the source tree is read-only
+# on NixOS). Built-in presets win when both dirs hold the same name.
+user_logconf_dir = data_dir / "logconf"
 _active_logconf_file = data_dir / "log_config"
 DEFAULT_LOGCONF = "logconf_default.json"
 
 
-def _valid_logconf_name(name: str) -> bool:
+def is_logconf_filename(name: str) -> bool:
+    """True for a bare ``logconf_<name>.json`` file name without path parts."""
     return (
         name.startswith("logconf_")
         and name.endswith(".json")
-        and (logconf_dir / name).is_file()
+        and len(name) > len("logconf_.json")
+        and name == Path(name).name
     )
+
+
+def _logconf_path(name: str) -> Path:
+    for base in (logconf_dir, user_logconf_dir):
+        if (base / name).is_file():
+            return base / name
+    return logconf_dir / name
+
+
+def _valid_logconf_name(name: str) -> bool:
+    return is_logconf_filename(name) and _logconf_path(name).is_file()
 
 
 def active_logconf_name() -> str:
@@ -159,13 +175,15 @@ def active_logconf_name() -> str:
 
 
 def active_logconf_path() -> Path:
-    """Absolute path to the active logging-config file in the source tree."""
-    return logconf_dir / active_logconf_name()
+    """Absolute path to the active logging-config file."""
+    return _logconf_path(active_logconf_name())
 
 
 def available_logconfs() -> list:
-    """Sorted bare filenames of the available logconf_*.json presets."""
-    return sorted(p.name for p in logconf_dir.glob("logconf_*.json"))
+    """Sorted bare filenames of the built-in and uploaded logconf_*.json presets."""
+    names = {p.name for p in logconf_dir.glob("logconf_*.json")}
+    names.update(p.name for p in user_logconf_dir.glob("logconf_*.json"))
+    return sorted(names)
 
 
 def set_active_logconf(name: str) -> None:

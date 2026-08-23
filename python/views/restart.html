@@ -22,6 +22,6 @@ setTimeout(function(){
     location.href="/";
     }, 40000); // 40000 milliseconds = 40 seconds
 
-fetch("/system/restart?" + new Date().getTime())
+fetch("/system/restart", { method: "POST" });
 </script>
 {% endblock %}

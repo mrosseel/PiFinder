@@ -660,7 +660,7 @@ def test_locations_add_remote(driver):
     # Fix: detect navigation via staleness_of with a short timeout. If no navigation
     # occurred (Firefox), navigate to the delete URL explicitly. This avoids a double
     # delete in Chrome since driver.get() is only called when the page hasn't moved.
-    confirm_delete_selector = f"#delete-modal-{location_row_index} a[href='/locations/delete/{location_row_index}']"
+    confirm_delete_selector = f"#delete-modal-{location_row_index} form[action='/locations/delete/{location_row_index}'] button"
     confirm_delete_button = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, confirm_delete_selector))
     )
@@ -777,7 +777,8 @@ def test_locations_default_switching(driver):
 
     # Step 1: Make the non-default location the new default
     set_default_button = driver.find_element(
-        By.CSS_SELECTOR, f"a[href='/locations/set_default/{non_default_index}']"
+        By.CSS_SELECTOR,
+        f"form[action='/locations/set_default/{non_default_index}'] button",
     )
     set_default_button.click()
 
@@ -879,7 +880,7 @@ def test_locations_default_switching(driver):
     # Click to make the original location default again
     restore_default_button = driver.find_element(
         By.CSS_SELECTOR,
-        f"a[href='/locations/set_default/{original_default_new_index}']",
+        f"form[action='/locations/set_default/{original_default_new_index}'] button",
     )
     restore_default_button.click()
 

@@ -15,9 +15,13 @@ Usage:
 Dependencies: No additional dependencies. Reuses PiFinder's existing Flask / PIL / shared state.
 """
 
+import functools
 import io
 import json
 import logging
+import os
+import signal
+import threading
 
 from flask import request, session, Response
 from PIL import Image
@@ -112,6 +116,13 @@ def _solution_to_dict(sol) -> dict:
     }
 
 
+def _valid_key_codes(server_instance) -> set:
+    """All key codes the UI accepts: named buttons plus the digit keys 0-9."""
+    codes = set(getattr(server_instance, "button_dict", {}).values())
+    codes.update(range(10))
+    return codes
+
+
 def register_api_routes(app, server_instance, require_auth=False):
     """
     Register all /api/* routes on the Flask app.
@@ -123,27 +134,21 @@ def register_api_routes(app, server_instance, require_auth=False):
     server_instance : Server
         The PiFinder Server class instance (self), used to access shared_state, etc.
     require_auth : bool
-        Whether to enable session authentication for /api/* endpoints.
-        Defaults to False for easier access by automation tools.
+        Whether the state-changing endpoints (POST /api/key, POST /api/stop)
+        need the Web UI login session. Read-only endpoints are always open
+        so automation tools can poll them.
     """
 
-    # Built-in simple token authentication (optional), to avoid modifying the auth_required decorator
-    api_token = getattr(server_instance, "api_token", None)
-
     def _check_auth():
-        if not require_auth and not api_token:
+        if not require_auth:
             return True
-        # 1) Session authentication (same as the Web UI)
-        if session.get("authenticated"):
-            return True
-        # 2) URL query token authentication (convenient for scripts/OpenClaw)
-        if api_token and request.args.get("token") == api_token:
-            return True
-        return False
+        # Session authentication (same as the Web UI)
+        return bool(session.get("authenticated"))
 
     def _auth_wrapper(func):
         """Return 401 if authentication is enabled and the request is not authorized"""
 
+        @functools.wraps(func)
         def wrapper(*args, **kwargs):
             if not _check_auth():
                 return _json_response({"error": "Unauthorized"}, 401)
@@ -179,7 +184,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response(data)
         except Exception as e:
             logger.error("api/status error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     # ───────────────────────────────────────────────
     # 2. Atomic endpoints (fetch individual items on demand)
@@ -198,7 +203,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response(data)
         except Exception as e:
             logger.error("api/time error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/location")
     def api_location():
@@ -217,7 +222,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             )
         except Exception as e:
             logger.error("api/location error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/solution")
     def api_solution():
@@ -266,7 +271,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response(payload)
         except Exception as e:
             logger.error("api/solution error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/visible_stars")
     def api_visible_stars():
@@ -687,7 +692,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response({"note": "IMU data not available"}, 503)
         except Exception as e:
             logger.error("api/imu error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/sqm")
     def api_sqm():
@@ -698,7 +703,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response({"note": "SQM data not available"}, 503)
         except Exception as e:
             logger.error("api/sqm error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     # ───────────────────────────────────────────────
     # 3. Image endpoint (no authentication required, convenient for direct embedding in browsers/OpenClaw)
@@ -738,7 +743,7 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _png_response(img)
         except Exception as e:
             logger.error("api/camera/raw error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/camera/debug")
     def api_camera_debug():
@@ -764,13 +769,14 @@ def register_api_routes(app, server_instance, require_auth=False):
                 return Response(f.read(), content_type="image/png")
         except Exception as e:
             logger.error("api/camera/debug error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+            return _json_response({"error": "Internal error"}, 500)
 
     # ───────────────────────────────────────────────
     # 4. Lightweight control endpoints (optional, for remote triggering by OpenClaw)
     # ───────────────────────────────────────────────
 
     @app.route("/api/key", methods=["POST"])
+    @_auth_wrapper
     def api_key():
         """Simulate button input. JSON body: {"button": "UP"} or {"button": 1}"""
         try:
@@ -778,18 +784,23 @@ def register_api_routes(app, server_instance, require_auth=False):
             if not body or "button" not in body:
                 return _json_response({"error": "Missing 'button' field"}, 400)
             btn = body["button"]
-            # Reuse server_instance's button_dict, if it exists
             bd = getattr(server_instance, "button_dict", {})
             if isinstance(btn, str) and btn in bd:
-                server_instance.keyboard_queue.put(bd[btn])
+                key = bd[btn]
+            elif isinstance(btn, (int, str)) and str(btn).lstrip("-").isdigit():
+                key = int(btn)
             else:
-                server_instance.keyboard_queue.put(int(btn))
+                return _json_response({"error": "Unknown button"}, 400)
+            if key not in _valid_key_codes(server_instance):
+                return _json_response({"error": "Unknown button"}, 400)
+            server_instance.keyboard_queue.put(key)
             return _json_response({"success": True, "button": btn})
-        except Exception as e:
-            logger.error("api/key error: %s", e)
-            return _json_response({"error": str(e)}, 500)
+        except Exception:
+            logger.exception("api/key error")
+            return _json_response({"error": "Internal error"}, 500)
 
     @app.route("/api/stop", methods=["POST"])
+    @_auth_wrapper
     def api_stop():
         """Cleanly shut down the entire PiFinder application.
 
@@ -812,9 +823,6 @@ def register_api_routes(app, server_instance, require_auth=False):
 
         Body (optional JSON): {"delay": <seconds before signalling, default 0.5>}
         """
-        import os
-        import signal
-        import threading
 
         try:
             body = request.get_json(silent=True) or {}

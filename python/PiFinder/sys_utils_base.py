@@ -152,9 +152,30 @@ def restore_userdata(zip_path: str) -> None:
     """
     Restore userdata from a zip backup.
     OVERWRITES existing data!
+
+    Backups store members as paths relative to "/" (see backup_userdata).
+    Only members that resolve inside the data dir are extracted; anything
+    else in the archive is rejected so an uploaded zip cannot write outside
+    PiFinder_data.
     """
+    data_root = utils.data_dir.resolve()
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall("/")
+        members = []
+        for info in zf.infolist():
+            target = (Path("/") / info.filename).resolve()
+            try:
+                target.relative_to(data_root)
+            except ValueError:
+                raise ValueError(f"Backup member outside the data dir: {info.filename}")
+            members.append(info)
+        for info in members:
+            target = (Path("/") / info.filename).resolve()
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                dst.write(src.read())
 
 
 # ---------------------------------------------------------------------------

@@ -64,9 +64,13 @@
           </div>
           <div class="row">
             <div class="input-field col s12">
-              <input placeholder="{{ _('None') }}" id="password" type="text" name="psk" class="validate" pattern=".{8,}">
+              <input placeholder="{{ _('None') }}" id="password" type="password" name="psk" class="validate" pattern=".{8,}" autocomplete="off">
               <label for="password">{{ _('Password') }}</label>
               <span class="helper-text" data-error="{{ _('Too Short') }}" data-success="">{{ _('Min 8 Characters or leave None') }}</span>
+              <label>
+                <input type="checkbox" onchange="document.getElementById('password').type = this.checked ? 'text' : 'password';">
+                <span>{{ _('Show password') }}</span>
+              </label>
             </div>
           </div>
           <div class="row">

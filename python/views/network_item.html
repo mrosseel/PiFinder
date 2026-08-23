@@ -15,7 +15,9 @@
       <p>{{ _('This will take effect immediately and can not be undone. Are you sure?') }}</p>
     </div>
     <div class="modal-footer">
-      <a href="/network/delete/{{ network["id"] }}" class="modal-close btn-flat">{{ _('Delete') }}</a>
+      <form method="post" action="/network/delete/{{ network["id"] }}" class="inline-form">
+        <button type="submit" class="modal-close btn-flat">{{ _('Delete') }}</button>
+      </form>
       <a href="#!" class="modal-close btn-flat">{{ _('Cancel') }}</a>
     </div>
   </div>

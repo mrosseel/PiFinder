@@ -25,7 +25,7 @@
   <td>{{ object["obs_time_local"] }}</td>
   <td>{{ object["catalog"] }}</td>
   <td>{{ object["sequence"] }}</td>
-  <td>{{ object["notes"] | safe }}</td>
+  <td>{% for line in object["notes"] %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
 </tr>
 {% endfor %}
 </table>

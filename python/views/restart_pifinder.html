@@ -18,6 +18,6 @@
   setTimeout(function() {
     location.href = "/";
   }, 20000);
-  fetch("/system/restart_pifinder?" + new Date().getTime());
+  fetch("/system/restart_pifinder", { method: "POST" });
 </script>
 {% endblock %}

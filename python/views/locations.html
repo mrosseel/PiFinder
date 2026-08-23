@@ -83,12 +83,16 @@
               <td>{{ "%.1f"|format(location.error_in_m) }}m</td>
               <td>{{ location.source }}</td>
               <td>
-                <a href="/locations/load/{{ loop.index0 }}" class="waves-effect waves-light btn-small" title="{{ _('Load Location') }}">
-                  <i class="material-icons">location_on</i>
-                </a>
-                <a href="/locations/set_default/{{ loop.index0 }}" class="waves-effect waves-light btn-small" title="{{ _('Set as Default') }}">
-                  <i class="material-icons">star</i>
-                </a>
+                <form method="post" action="/locations/load/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="waves-effect waves-light btn-small" title="{{ _('Load Location') }}" aria-label="{{ _('Load Location') }}">
+                    <i class="material-icons">location_on</i>
+                  </button>
+                </form>
+                <form method="post" action="/locations/set_default/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="waves-effect waves-light btn-small" title="{{ _('Set as Default') }}" aria-label="{{ _('Set as Default') }}">
+                    <i class="material-icons">star</i>
+                  </button>
+                </form>
                 <a href="#rename-modal-{{ loop.index0 }}" class="waves-effect waves-light btn-small modal-trigger" title="{{ _('Edit') }}">
                   <i class="material-icons">edit</i>
                 </a>
@@ -198,7 +202,9 @@
   </div>
   <div class="modal-footer">
     <a href="#!" class="modal-close waves-effect waves-light btn grey">{{ _('Cancel') }}</a>
-    <a href="/locations/delete/{{ loop.index0 }}" class="modal-close waves-effect waves-light btn red">{{ _('Delete') }}</a>
+    <form method="post" action="/locations/delete/{{ loop.index0 }}" class="inline-form">
+      <button type="submit" class="modal-close waves-effect waves-light btn red">{{ _('Delete') }}</button>
+    </form>
   </div>
 </div>
 {% endfor %}

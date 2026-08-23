@@ -1,8 +1,9 @@
+import functools
 import io
 import json
 import logging
+import secrets
 import time
-import uuid
 import os
 import argparse
 import sys
@@ -20,8 +21,17 @@ from PiFinder.equipment import Telescope, Eyepiece
 from PiFinder.keyboard_interface import KeyboardInterface
 from PiFinder.multiproclogging import MultiprocLogging
 
-from flask import Flask, request, jsonify, send_file, redirect, session, make_response
-from urllib.parse import quote
+from flask import (
+    Flask,
+    request,
+    jsonify,
+    send_file,
+    send_from_directory,
+    redirect,
+    session,
+    make_response,
+)
+from urllib.parse import quote, urlparse
 from flask_babel import Babel, gettext  # type: ignore[import-untyped]
 from werkzeug.routing import IntegerConverter
 from waitress import serve as waitress_serve
@@ -44,8 +54,44 @@ sys_utils = utils.get_sys_utils()
 logger = logging.getLogger("Server")
 logs_logger = logging.getLogger("Server.Logs")
 
-# Generate a secret to validate the auth cookie
-SESSION_SECRET = str(uuid.uuid4())
+# Cache for one day: the vendored JS/CSS only changes with a software update.
+STATIC_MAX_AGE = 86400
+
+
+def load_session_secret() -> str:
+    """Return the persistent secret that signs the session cookie.
+
+    The secret lives in the writable data dir so that a PiFinder restart does
+    not log every browser out. It is created on first use with mode 0600.
+    """
+    secret_file = utils.data_dir / "web_secret"
+    try:
+        secret = secret_file.read_text().strip()
+        if len(secret) >= 32:
+            return secret
+    except OSError:
+        pass
+    secret = secrets.token_hex(32)
+    try:
+        secret_file.parent.mkdir(parents=True, exist_ok=True)
+        secret_file.touch(mode=0o600, exist_ok=True)
+        secret_file.chmod(0o600)
+        secret_file.write_text(secret)
+    except OSError as e:
+        logger.warning("Could not persist web session secret: %s", e)
+    return secret
+
+
+def safe_redirect_target(url, default="/"):
+    """Only allow redirects to a local path; reject other hosts and schemes."""
+    if not url:
+        return default
+    parsed = urlparse(url)
+    if parsed.scheme or parsed.netloc:
+        return default
+    if not url.startswith("/") or url.startswith("//"):
+        return default
+    return url
 
 
 def parse_coordinate(value, field_name):
@@ -59,15 +105,16 @@ def parse_coordinate(value, field_name):
 
 
 def auth_required(func):
+    @functools.wraps(func)
     def auth_wrapper(*args, **kwargs):
         # check for and validate session
-        if "authenticated" in session and session["authenticated"]:
+        if session.get("authenticated"):
             return func(*args, **kwargs)
 
-        # Pass the original URL via ?next= so Safari preserves it across redirects
-        return redirect(f"/login?next={quote(request.url, safe='')}")
+        # Pass the original path via ?next= so Safari preserves it across redirects
+        next_url = request.full_path.rstrip("?")
+        return redirect(f"/login?next={quote(next_url, safe='')}")
 
-    auth_wrapper.__name__ = func.__name__
     return auth_wrapper
 
 
@@ -154,7 +201,12 @@ class Server:
         logger.debug(f"Template folder path: {views2_path}")
 
         app = Flask(__name__, template_folder=views2_path)
-        app.secret_key = SESSION_SECRET
+        app.secret_key = load_session_secret()
+        # SameSite=Lax: the browser does not send the cookie on cross-site
+        # POSTs, so with every state change behind POST this covers CSRF
+        # without a token system.
+        app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+        app.config["SESSION_COOKIE_HTTPONLY"] = True
         # Register the custom signed integer converter
         app.url_map.converters["signed_int"] = SignedIntConverter
 
@@ -192,20 +244,25 @@ class Server:
         # # Make translation function available to routes
         # app.jinja_env.globals['_'] = translate
 
-        # Static files routes
+        # Static files routes. send_from_directory refuses paths that escape
+        # the given directory.
         @app.route("/images/<path:filename>")
         def send_image(filename):
-            return send_file(
-                os.path.join(views2_path, "images", filename), mimetype="image/png"
+            return send_from_directory(
+                os.path.join(views2_path, "images"), filename, max_age=STATIC_MAX_AGE
             )
 
         @app.route("/js/<path:filename>")
         def send_js(filename):
-            return send_file(os.path.join(views2_path, "js", filename))
+            return send_from_directory(
+                os.path.join(views2_path, "js"), filename, max_age=STATIC_MAX_AGE
+            )
 
         @app.route("/css/<path:filename>")
         def send_css(filename):
-            return send_file(os.path.join(views2_path, "css", filename))
+            return send_from_directory(
+                os.path.join(views2_path, "css"), filename, max_age=STATIC_MAX_AGE
+            )
 
         @app.route("/")
         def home():
@@ -265,8 +322,8 @@ class Server:
             if request.method == "POST":
                 password = request.form.get("password")
                 # Read from hidden form field (set by GET handler); fall back to session
-                origin_url = request.form.get("origin_url") or session.get(
-                    "origin_url", "/"
+                origin_url = safe_redirect_target(
+                    request.form.get("origin_url") or session.get("origin_url")
                 )
                 if sys_utils.verify_password("pifinder", password):
                     session["authenticated"] = True
@@ -280,7 +337,9 @@ class Server:
                     )
             else:
                 # Prefer ?next= URL param (set by auth_required); fall back to session
-                origin_url = request.args.get("next", session.get("origin_url", "/"))
+                origin_url = safe_redirect_target(
+                    request.args.get("next") or session.get("origin_url")
+                )
                 return app.jinja_env.get_template("login.html").render(
                     title=gettext("Login"), origin_url=origin_url
                 )
@@ -467,7 +526,7 @@ class Server:
                     error_message=str(e),
                 )
 
-        @app.route("/locations/delete/<int:location_id>")
+        @app.route("/locations/delete/<int:location_id>", methods=["POST"])
         @auth_required
         def location_delete(location_id):
             cfg = config.Config()
@@ -480,7 +539,7 @@ class Server:
                 self.ui_queue.put("reload_config")
             return redirect("/locations")
 
-        @app.route("/locations/set_default/<int:location_id>")
+        @app.route("/locations/set_default/<int:location_id>", methods=["POST"])
         @auth_required
         def location_set_default(location_id):
             cfg = config.Config()
@@ -493,7 +552,7 @@ class Server:
                 self.ui_queue.put("reload_config")
             return redirect("/locations")
 
-        @app.route("/locations/load/<int:location_id>")
+        @app.route("/locations/load/<int:location_id>", methods=["POST"])
         @auth_required
         def location_load(location_id):
             cfg = config.Config()
@@ -516,7 +575,7 @@ class Server:
             self.network.add_wifi_network(ssid, key_mgmt, psk)
             return redirect("/network")
 
-        @app.route("/network/delete/<int:network_id>")
+        @app.route("/network/delete/<int:network_id>", methods=["POST"])
         @auth_required
         def network_delete(network_id):
             self.network.delete_wifi_network(network_id)
@@ -574,7 +633,7 @@ class Server:
                     title=_("Tools"), error_message=_("New passwords do not match")
                 )
 
-        @app.route("/system/restart")
+        @app.route("/system/restart", methods=["POST"])
         @auth_required
         def system_restart():
             """
@@ -583,7 +642,7 @@ class Server:
             sys_utils.restart_system()
             return "restarting"
 
-        @app.route("/system/restart_pifinder")
+        @app.route("/system/restart_pifinder", methods=["POST"])
         @auth_required
         def pifinder_restart():
             """
@@ -599,7 +658,9 @@ class Server:
                 title=_("Equipment"), equipment=config.Config().equipment
             )
 
-        @app.route("/equipment/set_active_instrument/<int:instrument_id>")
+        @app.route(
+            "/equipment/set_active_instrument/<int:instrument_id>", methods=["POST"]
+        )
         @auth_required
         def set_active_instrument(instrument_id: int):
             cfg = config.Config()
@@ -616,7 +677,7 @@ class Server:
                 + _("set as active instrument."),
             )
 
-        @app.route("/equipment/set_active_eyepiece/<int:eyepiece_id>")
+        @app.route("/equipment/set_active_eyepiece/<int:eyepiece_id>", methods=["POST"])
         @auth_required
         def set_active_eyepiece(eyepiece_id: int):
             cfg = config.Config()
@@ -767,7 +828,7 @@ class Server:
                 success_message=_("Eyepiece added, restart your PiFinder to use"),
             )
 
-        @app.route("/equipment/delete_eyepiece/<int:eyepiece_id>")
+        @app.route("/equipment/delete_eyepiece/<int:eyepiece_id>", methods=["POST"])
         @auth_required
         def equipment_delete_eyepiece(eyepiece_id: int):
             cfg = config.Config()
@@ -853,7 +914,7 @@ class Server:
                 success_message=_("Instrument Added, restart your PiFinder to use"),
             )
 
-        @app.route("/equipment/delete_instrument/<int:instrument_id>")
+        @app.route("/equipment/delete_instrument/<int:instrument_id>", methods=["POST"])
         @auth_required
         def equipment_delete_instrument(instrument_id: int):
             cfg = config.Config()
@@ -914,10 +975,11 @@ class Server:
             ret_objects = []
             for obj in objects:
                 obj_ = dict(obj)
-                obj_notes = json.loads(obj_["notes"])
-                obj_["notes"] = "<br>".join(
-                    [f"{key}: {value}" for key, value in obj_notes.items()]
-                )
+                try:
+                    obj_notes = json.loads(obj_["notes"] or "{}")
+                except (TypeError, ValueError):
+                    obj_notes = {"notes": obj_["notes"]}
+                obj_["notes"] = [f"{key}: {value}" for key, value in obj_notes.items()]
                 ret_objects.append(obj_)
             return app.jinja_env.get_template("obs_session_log.html").render(
                 title=_("Session Log"), session=session, objects=ret_objects
@@ -1076,16 +1138,17 @@ class Server:
             if not upload:
                 logger.warning("No file provided for log config upload")
                 return jsonify({"status": "error", "message": "No file provided"})
-            filename = upload.filename
-            if not filename.startswith("logconf_") or not filename.endswith(".json"):
-                logger.warning("Invalid log config file name: %s", filename)
+            filename = os.path.basename(upload.filename or "")
+            if not utils.is_logconf_filename(filename):
+                logger.warning("Invalid log config file name: %s", upload.filename)
                 return jsonify(
                     {
                         "status": "error",
                         "message": "File must be named logconf_<name>.json",
                     }
                 )
-            if os.path.exists(filename):
+            target = utils.user_logconf_dir / filename
+            if target.exists() or (utils.logconf_dir / filename).exists():
                 logger.warning("Log config file already exists: %s", filename)
                 return jsonify(
                     {
@@ -1094,12 +1157,13 @@ class Server:
                     }
                 )
             try:
-                upload.save(filename)
-                logger.info("Uploaded log config: %s", filename)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                upload.save(str(target))
+                logger.info("Uploaded log config: %s", target)
                 return jsonify({"status": "ok", "file": filename})
             except Exception as e:
                 logger.error("Failed to save uploaded log config: %s", e)
-                return jsonify({"status": "error", "message": str(e)})
+                return jsonify({"status": "error", "message": "Could not save file"})
 
         @app.route("/tools/backup")
         @auth_required
@@ -1187,11 +1251,10 @@ class Server:
         try:
             from PiFinder.api_extensions import register_api_routes
 
-            register_api_routes(app, self, require_auth=False)
+            register_api_routes(app, self, require_auth=True)
         except Exception:
             logger.exception("Failed to register API extension routes")
 
-        @auth_required
         def gps_lock(lat: float = 50, lon: float = 3, altitude: float = 10):
             msg = (
                 "fix",

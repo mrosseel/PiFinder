@@ -50,3 +50,14 @@ main {
     background-color: #555;
   }
 }
+
+.inline-form {
+  display: inline-block;
+  margin: 0;
+}
+
+.icon-button {
+  padding: 0 0.25rem;
+  line-height: inherit;
+  height: auto;
+}
