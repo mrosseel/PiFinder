@@ -59,13 +59,13 @@
         <table class="striped">
           <thead>
             <tr>
-              <th>{{ _('Name') }}</th>
-              <th>{{ _('Latitude') }}</th>
-              <th>{{ _('Longitude') }}</th>
-              <th>{{ _('Altitude') }}</th>
-              <th>{{ _('Error') }}</th>
-              <th>{{ _('Source') }}</th>
-              <th>{{ _('Actions') }}</th>
+              <th scope="col">{{ _('Name') }}</th>
+              <th scope="col">{{ _('Latitude') }}</th>
+              <th scope="col">{{ _('Longitude') }}</th>
+              <th scope="col">{{ _('Altitude') }}</th>
+              <th scope="col">{{ _('Error') }}</th>
+              <th scope="col">{{ _('Source') }}</th>
+              <th scope="col">{{ _('Actions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -204,7 +204,7 @@
   <div class="modal-footer">
     <a href="#!" class="modal-close waves-effect waves-light btn grey">{{ _('Cancel') }}</a>
     <form method="post" action="/locations/delete/{{ loop.index0 }}" class="inline-form">
-      <button type="submit" class="modal-close waves-effect waves-light btn red">{{ _('Delete') }}</button>
+      <button type="submit" class="waves-effect waves-light btn red">{{ _('Delete') }}</button>
     </form>
   </div>
 </div>

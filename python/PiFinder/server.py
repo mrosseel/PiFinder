@@ -261,12 +261,25 @@ class Server:
         # Use PiFinder's global gettext function in templates
         app.jinja_env.globals["_"] = builtins._
 
+        @app.context_processor
+        def inject_globals():
+            # asset_version busts the browser cache of JS/CSS on upgrades
+            return {"lang": server_locale(), "asset_version": self._software_version}
+
         # Static files routes. send_from_directory refuses paths that escape
         # the given directory.
         @app.route("/images/<path:filename>")
         def send_image(filename):
             return send_from_directory(
                 os.path.join(views2_path, "images"), filename, max_age=STATIC_MAX_AGE
+            )
+
+        @app.route("/favicon.ico")
+        def favicon():
+            return send_from_directory(
+                os.path.join(views2_path, "images"),
+                "WebLogo_RED.png",
+                max_age=STATIC_MAX_AGE,
             )
 
         @app.route("/js/<path:filename>")

@@ -653,28 +653,13 @@ def test_locations_add_remote(driver):
         EC.visibility_of_element_located((By.ID, delete_modal_id))
     )
 
-    # Click the actual delete button in the modal.
-    # Firefox: Materialize's close() removes the modal element from the DOM inside the
-    # click handler, which causes Firefox to drop the pending href navigation (the clicked
-    # <a> is detached before the browser can follow it). Chrome navigates fine.
-    # Fix: detect navigation via staleness_of with a short timeout. If no navigation
-    # occurred (Firefox), navigate to the delete URL explicitly. This avoids a double
-    # delete in Chrome since driver.get() is only called when the page hasn't moved.
+    # Click the delete button in the confirm modal; it submits a POST form.
     confirm_delete_selector = f"#delete-modal-{location_row_index} form[action='/locations/delete/{location_row_index}'] button"
     confirm_delete_button = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, confirm_delete_selector))
     )
-    delete_href = confirm_delete_button.get_attribute("href")
     confirm_delete_button.click()
-
-    # Chrome: page navigates → table_body becomes stale → staleness_of succeeds
-    # Firefox: page stays put → table_body stays valid → TimeoutException after 3s
-    try:
-        WebDriverWait(driver, 3).until(EC.staleness_of(table_body))
-    except Exception:
-        # Firefox: Materialize modal-close detaches <a> before browser follows href.
-        # Navigate explicitly to complete the deletion.
-        driver.get(delete_href)
+    WebDriverWait(driver, 10).until(EC.staleness_of(table_body))
 
     WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.TAG_NAME, "table"))

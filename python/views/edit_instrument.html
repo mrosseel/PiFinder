@@ -51,7 +51,7 @@
                     <option value="alt/az" {% if telescope.mount_type == "alt/az" %}selected{% endif %}>{{ _('Alt/Az') }}</option>
                     <option value="equatorial" {% if telescope.mount_type == "equatorial" %}selected{% endif %}>{{ _('Equatorial') }}</option>
                 </select>
-                <label>
+                <label for="mount_type">
                     {{ _('Mount Type') }}
                 </label>
             </div>
@@ -91,14 +91,13 @@
     </div>
 </form>
 
-<a href="#" onClick="document.getElementById('add_instrument').submit();"
-   class="btn">
+<button type="submit" form="add_instrument" class="btn">
 {% if instrument_id < 0 %}
     {{ _('Add instrument!') }}
 {% else %}
     {{ _('Update instrument!') }}
 {% endif %}
-</a>
+</button>
 <a href="/equipment" class="btn">{{ _('Cancel') }}</a>
 
 <br />

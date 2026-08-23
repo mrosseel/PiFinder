@@ -12,13 +12,13 @@
     {{ session["duration"] | round(1) }}
   </div>
   <div class="col s4">
-    <a href="/observations/{{ session["UID"] }}?download=1" class="grey-text"><i class="material-icons medium">download</i></a>
+    <a href="/observations/{{ session["UID"] }}?download=1" class="grey-text" title="{{ _('Download session') }}" aria-label="{{ _('Download session') }}"><i class="material-icons medium">download</i></a>
   </div>
 </div>
-<center>
-<table class="grey darken-2 grey-text z-depth-1">
+<div class="center-align">
+<table class="grey darken-2 grey-text z-depth-1 responsive-table">
 <tr>
-<th>{{ _('Time') }}</th><th>{{ _('Catalog') }}</th><th>{{ _('Sequence') }}</th><th>{{ _('Notes') }}</th>
+<th scope="col">{{ _('Time') }}</th><th scope="col">{{ _('Catalog') }}</th><th scope="col">{{ _('Sequence') }}</th><th scope="col">{{ _('Notes') }}</th>
 </tr>
 {% for object in objects %}
 <tr>
@@ -29,5 +29,5 @@
 </tr>
 {% endfor %}
 </table>
-</center>
+</div>
 {% endblock %}

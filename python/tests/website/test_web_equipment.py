@@ -281,11 +281,20 @@ def test_equipment_add_instrument_functionality(driver):
     ), f"Test instrument '{test_instrument['name']}' not found in instruments table"
 
     # Now delete the test instrument to clean up.
-    delete_link = rows[test_instrument_row_index].find_element(
-        By.CSS_SELECTOR, "form[action*='delete_instrument'] button"
+    rows[test_instrument_row_index].find_element(
+        By.CSS_SELECTOR, "a[href^='#delete-instrument-']"
+    ).click()
+    delete_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (
+                By.CSS_SELECTOR,
+                f"#delete-instrument-{test_instrument_row_index} "
+                "form[action*='delete_instrument'] button",
+            )
+        )
     )
     old_instruments_table = instruments_table
-    delete_link.click()
+    delete_button.click()
 
     # Wait for the old table to become stale (proves the page navigated),
     # then find the freshly rendered table on the new page.
@@ -383,11 +392,20 @@ def test_equipment_add_eyepiece_functionality(driver):
     ), f"Test eyepiece '{test_eyepiece['name']}' not found in eyepieces table"
 
     # Now delete the test eyepiece to clean up.
-    delete_link = rows[test_eyepiece_row_index].find_element(
-        By.CSS_SELECTOR, "form[action*='delete_eyepiece'] button"
+    rows[test_eyepiece_row_index].find_element(
+        By.CSS_SELECTOR, "a[href^='#delete-eyepiece-']"
+    ).click()
+    delete_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable(
+            (
+                By.CSS_SELECTOR,
+                f"#delete-eyepiece-{test_eyepiece_row_index} "
+                "form[action*='delete_eyepiece'] button",
+            )
+        )
     )
     old_eyepieces_table = eyepieces_table
-    delete_link.click()
+    delete_button.click()
 
     # Wait for the old table to become stale (proves the page navigated),
     # then find the freshly rendered table on the new page.

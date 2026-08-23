@@ -310,7 +310,7 @@ ignore_missing_imports = true
 pythonpath = ["."]
 testpaths = [
     "tests",
-    "tests/webserver",
+    "tests/website",
 ]
 markers = [
     "smoke",

@@ -71,3 +71,33 @@ main {
 .error-message:empty {
   display: none;
 }
+
+.status-table {
+  max-width: 512px;
+  margin: 0 auto;
+}
+
+/* The nav has nine entries: keep the hamburger menu up to 992px so the
+   links never overlap the logo, and give the nav the full container width. */
+nav .nav-wrapper.container {
+  width: 95%;
+  max-width: none;
+}
+
+nav ul a {
+  padding: 0 10px;
+}
+
+@media only screen and (max-width: 992px) {
+  nav ul.hide-on-med-and-down {
+    display: none !important;
+  }
+  nav a.sidenav-trigger {
+    display: block !important;
+  }
+  /* Centre the logo (as on phones) so it never sits on the hamburger */
+  nav .brand-logo {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}

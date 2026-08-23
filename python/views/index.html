@@ -5,21 +5,21 @@
 <div class="center-align">
     <img id="image" src="" alt="{{ _('PiFinder Screen') }}" class="pifinder-screen z-depth-2">
 </div>
-<center>
-<table class="grey darken-2 grey-text z-depth-1" style="max-width: 512px;">
+<div class="center-align">
+<table class="grey darken-2 grey-text z-depth-1 status-table">
 <tr>
     <td>
       <i class="material-icons medium">wifi</i>
     </td>
     <td class="grey-text text-lighten-1">{{ _('%(mode)s Mode') % {'mode': wifi_mode} }}<br>{{ network_name }}<br>{{ ip }}</td>
-    <td><a href="/network" class="grey-text"><i class="material-icons">edit</i></a></td>
+    <td><a href="/network" class="grey-text" title="{{ _('Network Setup') }}" aria-label="{{ _('Network Setup') }}"><i class="material-icons">edit</i></a></td>
 </tr>
 <tr>
     <td>
       <i class="material-icons medium">{{ gps_icon }}</i>
     </td>
     <td class="grey-text text-lighten-1">{{ gps_text }}<br>{{ _('lat') }}: {{ lat_text }} / {{ _('lon') }}: {{ lon_text }}</td>
-    <td><a href="/gps" class="grey-text"><i class="material-icons">edit</i></a></td>
+    <td><a href="/gps" class="grey-text" title="{{ _('GPS') }}" aria-label="{{ _('GPS') }}"><i class="material-icons">edit</i></a></td>
     <td></td>
 </tr>
 <tr>
@@ -37,7 +37,7 @@
     <td></td>
 </tr>
 </table>
-</center>
+</div>
 {% endblock %}
 
 {% block scripts %}

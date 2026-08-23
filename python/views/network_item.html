@@ -4,7 +4,7 @@
           {{ _('Security') }}: <b>{{ network["key_mgmt"] }}</b>
       </td>
       <td>
-        <a href="#modal{{ network["id"] }}" class="grey-text modal-trigger">
+        <a href="#modal{{ network["id"] }}" class="grey-text modal-trigger" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}">
           <i class="material-icons">delete</i>
         </a>
       </td>
@@ -16,7 +16,7 @@
     </div>
     <div class="modal-footer">
       <form method="post" action="/network/delete/{{ network["id"] }}" class="inline-form">
-        <button type="submit" class="modal-close btn-flat">{{ _('Delete') }}</button>
+        <button type="submit" class="btn-flat">{{ _('Delete') }}</button>
       </form>
       <a href="#!" class="modal-close btn-flat">{{ _('Cancel') }}</a>
     </div>

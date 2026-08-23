@@ -45,14 +45,13 @@
         </div>
     </div>
 </form>
-<a href="#" onClick="document.getElementById('add_eyepiece').submit();"
-   class="btn">
+<button type="submit" form="add_eyepiece" class="btn">
 {% if eyepiece_id < 0 %}
     {{ _('Add eyepiece!') }}
 {% else %}
     {{ _('Update eyepiece!') }}
 {% endif %}
-</a>
+</button>
 <a href="/equipment" class="btn">{{ _('Cancel') }}</a>
 
 <br />

@@ -39,30 +39,29 @@
         </form>
     </div>
     <div class="modal-footer">
-        <a href="#" onClick="document.getElementById('deepskylog_form').submit();"
-           class="modal-close btn-flat">{{ _('Import!') }}</a>
+        <button type="submit" form="deepskylog_form" class="btn-flat">{{ _('Import!') }}</button>
         <a href="#!" class="modal-close btn-flat">{{ _('Cancel') }}</a>
     </div>
 </div>
 
-<a href="/equipment/edit_instrument/-1" class="btn modal-trigger">{{ _('Add new instrument') }}</a>
-<a href="/equipment/edit_eyepiece/-1" class="btn modal-trigger">{{ _('Add new eyepiece') }}</a>
+<a href="/equipment/edit_instrument/-1" class="btn">{{ _('Add new instrument') }}</a>
+<a href="/equipment/edit_eyepiece/-1" class="btn">{{ _('Add new eyepiece') }}</a>
 
 <h5 class="grey-text" id="instruments-heading">{{ _('Instruments') }}</h5>
 <table id="instruments-table" class="grey darken-2 grey-text z-depth-1 responsive-table">
     <tr>
-        <th>{{ _('Make') }}</th>
-        <th>{{ _('Name') }}</th>
-        <th>{{ _('Aperture') }}</th>
-        <th>{{ _('Focal Length (mm)') }}</th>
-        <th>{{ _('Obstruction %') }}</th>
-        <th>{{ _('Mount Type') }}</th>
-        <th>{{ _('Flip') }}</th>
-        <th>{{ _('Flop') }}</th>
-        <th>{{ _('Reverse Arrow A') }}</th>
-        <th>{{ _('Reverse Arrow B') }}</th>
-        <th>{{ _('Active') }}</th>
-        <th>{{ _('Actions') }}</th>
+        <th scope="col">{{ _('Make') }}</th>
+        <th scope="col">{{ _('Name') }}</th>
+        <th scope="col">{{ _('Aperture') }}</th>
+        <th scope="col">{{ _('Focal Length (mm)') }}</th>
+        <th scope="col">{{ _('Obstruction %') }}</th>
+        <th scope="col">{{ _('Mount Type') }}</th>
+        <th scope="col">{{ _('Flip') }}</th>
+        <th scope="col">{{ _('Flop') }}</th>
+        <th scope="col">{{ _('Reverse Arrow A') }}</th>
+        <th scope="col">{{ _('Reverse Arrow B') }}</th>
+        <th scope="col">{{ _('Active') }}</th>
+        <th scope="col">{{ _('Actions') }}</th>
     </tr>
     {% for instrument in equipment.telescopes %}
     <tr>
@@ -89,10 +88,20 @@
                 </form>
         </td>
         <td>
-            <a href="/equipment/edit_instrument/{{ loop.index0 }}"><i class="material-icons">edit</i></a>
-            <form method="post" action="/equipment/delete_instrument/{{ loop.index0 }}" class="inline-form">
-                <button type="submit" class="btn-flat icon-button" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></button>
-            </form>
+            <a href="/equipment/edit_instrument/{{ loop.index0 }}" title="{{ _('Edit') }}" aria-label="{{ _('Edit') }}"><i class="material-icons">edit</i></a>
+            <a href="#delete-instrument-{{ loop.index0 }}" class="modal-trigger" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></a>
+            <div id="delete-instrument-{{ loop.index0 }}" class="modal">
+              <div class="modal-content">
+                <h4>{{ _('Confirm Delete') }}</h4>
+                <p>{{ _('Delete the instrument "%(name)s"? This action cannot be undone.') % {'name': instrument.make ~ ' ' ~ instrument.name} }}</p>
+              </div>
+              <div class="modal-footer">
+                <a href="#!" class="modal-close btn grey">{{ _('Cancel') }}</a>
+                <form method="post" action="/equipment/delete_instrument/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="btn red">{{ _('Delete') }}</button>
+                </form>
+              </div>
+            </div>
        </td>
     </tr>
     {% endfor %}
@@ -101,13 +110,13 @@
 <h5 class="grey-text" id="eyepieces-heading">{{ _('Eyepieces') }}</h5>
 <table id="eyepieces-table" class="grey darken-2 grey-text z-depth-1 responsive-table">
     <tr>
-        <th>{{ _('Make') }}</th>
-        <th>{{ _('Name') }}</th>
-        <th>{{ _('Focal Length (mm)') }}</th>
-        <th>{{ _('Apparent FOV') }}</th>
-        <th>{{ _('Field Stop') }}</th>
-        <th>{{ _('Active') }}</th>
-        <th>{{ _('Actions') }}</th>
+        <th scope="col">{{ _('Make') }}</th>
+        <th scope="col">{{ _('Name') }}</th>
+        <th scope="col">{{ _('Focal Length (mm)') }}</th>
+        <th scope="col">{{ _('Apparent FOV') }}</th>
+        <th scope="col">{{ _('Field Stop') }}</th>
+        <th scope="col">{{ _('Active') }}</th>
+        <th scope="col">{{ _('Actions') }}</th>
     </tr>
 
     {% for eyepiece in equipment.eyepieces %}
@@ -130,10 +139,20 @@
                 </form>
         </td>
         <td>
-            <a href="/equipment/edit_eyepiece/{{ loop.index0 }}"><i class="material-icons">edit</i></a>
-            <form method="post" action="/equipment/delete_eyepiece/{{ loop.index0 }}" class="inline-form">
-                <button type="submit" class="btn-flat icon-button" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></button>
-            </form>
+            <a href="/equipment/edit_eyepiece/{{ loop.index0 }}" title="{{ _('Edit') }}" aria-label="{{ _('Edit') }}"><i class="material-icons">edit</i></a>
+            <a href="#delete-eyepiece-{{ loop.index0 }}" class="modal-trigger" title="{{ _('Delete') }}" aria-label="{{ _('Delete') }}"><i class="material-icons">delete</i></a>
+            <div id="delete-eyepiece-{{ loop.index0 }}" class="modal">
+              <div class="modal-content">
+                <h4>{{ _('Confirm Delete') }}</h4>
+                <p>{{ _('Delete the eyepiece "%(name)s"? This action cannot be undone.') % {'name': eyepiece.make ~ ' ' ~ eyepiece.name} }}</p>
+              </div>
+              <div class="modal-footer">
+                <a href="#!" class="modal-close btn grey">{{ _('Cancel') }}</a>
+                <form method="post" action="/equipment/delete_eyepiece/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="btn red">{{ _('Delete') }}</button>
+                </form>
+              </div>
+            </div>
         </td>
     </tr>
     {% endfor %}

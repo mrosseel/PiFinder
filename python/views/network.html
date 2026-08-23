@@ -12,11 +12,11 @@
     <form action="/network/update" method="post" id="network_form" class="col s12">
         <div class="row">
             <div class="input-field col s12">
-                <select name="wifi_mode">
+                <select name="wifi_mode" id="wifi_mode">
                     <option value="AP" {% if net.wifi_mode() == "AP" %}selected{% endif %}>{{ _('Access Point') }}</option>
                     <option value="Client" {% if net.wifi_mode() == "Client" %}selected{% endif %}>{{ _('Client') }}</option>
                 </select>
-                <label>{{ _('Wifi Mode') }}</label>
+                <label for="wifi_mode">{{ _('Wifi Mode') }}</label>
             </div>
         </div>
         <div class="row">
@@ -34,7 +34,7 @@
     </form>
   </div>
   <div class="card-action">
-    <a href="#" onClick="document.getElementById('network_form').submit(); return false;" class="btn">{{ _('Update') }}</a>
+    <button type="submit" form="network_form" class="btn">{{ _('Update') }}</button>
   </div>
 </div>
 <div class="row valign-wrapper" style="margin: 0px;">
@@ -43,7 +43,7 @@
   </div>
   <div class="col s2">
 {% if not show_new_form %}
-    <a class="btn-floating btn-small grey" href="/network?add_new=1"><i class="material-icons">add</i></a>
+    <a class="btn-floating btn-small grey" href="/network?add_new=1" title="{{ _('Add network') }}" aria-label="{{ _('Add network') }}"><i class="material-icons">add</i></a>
 {% endif %}
   </div>
 </div>
