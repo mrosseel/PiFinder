@@ -61,3 +61,13 @@ main {
   line-height: inherit;
   height: auto;
 }
+
+.error-message {
+  color: #ef9a9a;
+  text-align: center;
+  padding: 0.5rem;
+}
+
+.error-message:empty {
+  display: none;
+}

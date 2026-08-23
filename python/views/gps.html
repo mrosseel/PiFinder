@@ -20,12 +20,14 @@
         </div>
         <div class="row" id="decimalFormat">
             <div class="input-field col s6">
-                <input id="latitudeDecimal" type="text" name="latitudeDecimal" value="{% if lat is not none %}{{ lat }}{% endif %}"/>
+                <input id="latitudeDecimal" type="text" inputmode="decimal" name="latitudeDecimal" value="{% if lat is not none %}{{ lat }}{% endif %}"/>
                 <label for="latitudeDecimal">{{ _('Latitude (Decimal)') }}</label>
+                <span class="helper-text"></span>
             </div>
             <div class="input-field col s6">
-                <input id="longitudeDecimal" type="text" name="longitudeDecimal" value="{% if lon is not none %}{{ lon }}{% endif %}"/>
+                <input id="longitudeDecimal" type="text" inputmode="decimal" name="longitudeDecimal" value="{% if lon is not none %}{{ lon }}{% endif %}"/>
                 <label for="longitudeDecimal">{{ _('Longitude (Decimal)') }}</label>
+                <span class="helper-text"></span>
             </div>
         </div>
         <div class="row" id="dmsFormat" style="display:none;">
@@ -56,8 +58,9 @@
         </div>
         <div class="row">
             <div class="input-field col s8">
-                <input id="altitude" type="text" name="altitude" value="{% if altitude is not none %}{{ altitude }}{% endif %}"/>
+                <input id="altitude" type="text" inputmode="decimal" name="altitude" value="{% if altitude is not none %}{{ altitude }}{% endif %}"/>
                 <label for="altitude">{{ _('Altitude in meter') }}</label>
+                <span class="helper-text"></span>
             </div>
             </div>
         <div class="row">
@@ -85,193 +88,123 @@
 
 {% block scripts %}
 <script>
+const GPS_MESSAGES = {
+    required: {{ _('This field is required')|tojson }},
+    number: {{ _('Must be a valid number')|tojson }},
+    latitude: {{ _('Must be between -90 and 90')|tojson }},
+    longitude: {{ _('Must be between -180 and 180')|tojson }},
+    altitude: {{ _('Must be between -1000 and 10000 meters')|tojson }}
+};
+const DECIMAL_FIELDS = { latitudeDecimal: 'latitude', longitudeDecimal: 'longitude', altitude: 'altitude' };
+const DMS_IDS = ["latitudeD", "latitudeM", "latitudeS", "longitudeD", "longitudeM", "longitudeS"];
+
 function toggleFormat() {
     var checkBox = document.getElementById("formatSwitch");
     var decimalFormat = document.getElementById("decimalFormat");
     var dmsFormat = document.getElementById("dmsFormat");
-    if (checkBox.checked == true){
+    if (checkBox.checked) {
         decimalFormat.style.display = "none";
         dmsFormat.style.display = "block";
-        focusFirstDMSField();
+        convertDecimalToDMS();
+        document.getElementById("latitudeD").focus();
     } else {
         decimalFormat.style.display = "block";
         dmsFormat.style.display = "none";
     }
 }
 
-function focusFirstDMSField() {
-    var latS = document.getElementById("latitudeS");
-    var latM = document.getElementById("latitudeM");
-    var latD = document.getElementById("latitudeD");
-    var longS = document.getElementById("longitudeS");
-    var longM = document.getElementById("longitudeM");
-    var longD = document.getElementById("longitudeD");
-
-    if (latS.offsetParent !== null) {
-        // Sequentially set focus
-        latS.focus();
-        latM.focus();
-        latD.focus();
-        longS.focus();
-        longM.focus();
-        longD.focus();
-    } else {
-        // Retry if not visible
-        setTimeout(focusFirstDMSField, 50);
-    }
-}
-
 function setBrowserDateTime() {
     var now = new Date();
-    var dateString = now.toISOString().split('T')[0]; // Extract date in YYYY-MM-DD format
     var pad = function (n) { return String(n).padStart(2, "0"); };
-    var timeString = pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds());
-
-    document.getElementById("date").value = dateString;
-    document.getElementById("time").value = timeString;
-
-    // Set focus to the 'date' field if needed
-    document.getElementById("date").focus();
+    document.getElementById("date").value = now.toISOString().split('T')[0];
+    document.getElementById("time").value = pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds());
 }
 
-document.addEventListener('DOMContentLoaded', function () {
-    // Existing initialization code
-    var elems = document.querySelectorAll('select');
-    var instances = M.FormSelect.init(elems);
-
-    var modalElems = document.querySelectorAll('.modal');
-    var modalInstances = M.Modal.init(modalElems);
-
-       // Function to check if all fields are filled with numbers
-    function checkFields() {
-        var latitude = document.getElementById('latitudeDecimal').value;
-        var longitude = document.getElementById('longitudeDecimal').value;
-        var altitude = document.getElementById('altitude').value;
-        var saveButton = document.getElementById('saveButton');
-
-        // Check if all fields are not empty and contain valid numbers
-        if (latitude && !isNaN(latitude) &&
-            longitude && !isNaN(longitude) &&
-            altitude && !isNaN(altitude)) {
-            saveButton.disabled = false;
-        } else {
-            saveButton.disabled = true;
-        }
+function showFieldError(field, fieldName) {
+    var helper = field.parentElement.querySelector('.helper-text');
+    var value = normalizeDecimal(field.value);
+    var valid = validateField(value, fieldName);
+    field.classList.toggle('invalid', !valid);
+    helper.classList.toggle('red-text', !valid);
+    if (valid) {
+        helper.textContent = '';
+    } else if (value === '') {
+        helper.textContent = GPS_MESSAGES.required;
+    } else if (isNaN(parseFloat(value))) {
+        helper.textContent = GPS_MESSAGES.number;
+    } else {
+        helper.textContent = GPS_MESSAGES[fieldName];
     }
-
-    // Event listeners for input fields
-    document.getElementById('latitudeDecimal').addEventListener('input', checkFields);
-    document.getElementById('longitudeDecimal').addEventListener('input', checkFields);
-    document.getElementById('altitude').addEventListener('input', checkFields);
-
-    // Initial check on page load
-    checkFields();
-
-    setBrowserDateTime();
-
-    // Convert decimal to DMS on page load if fields are pre-filled
-    convertDecimalToDMS();
-});
-
-// Conversion from Decimal to DMS
-function decimalToDMS(decimal) {
-    var degrees = Math.floor(decimal);
-    var minutes = Math.floor((Math.abs(decimal) * 3600) / 60) % 60;
-    var seconds = Math.abs(decimal * 3600) % 60;
-
-    // Round seconds to 2 decimal places
-    seconds = Math.round(seconds * 100) / 100;
-
-    // Handle the case where seconds round up to 60
-    if (seconds === 60) {
-        seconds = 0;
-        minutes += 1;
-    }
-
-    // Handle the case where minutes round up to 60
-    if (minutes === 60) {
-        minutes = 0;
-        degrees += (decimal >= 0 ? 1 : -1); // Increment or decrement degrees based on sign
-    }
-
-    return [degrees, minutes, seconds];
+    return valid;
 }
 
-// Conversion from DMS to Decimal
-function DMSToDecimal(degrees, minutes, seconds) {
-    var sign = degrees < 0 ? -1 : 1;
-    return sign * (Math.abs(degrees) + (minutes / 60) + (seconds / 3600));
+function checkFields() {
+    var allValid = true;
+    Object.keys(DECIMAL_FIELDS).forEach(function (id) {
+        var field = document.getElementById(id);
+        if (!showFieldError(field, DECIMAL_FIELDS[id])) allValid = false;
+    });
+    document.getElementById('saveButton').disabled = !allValid;
+    return allValid;
+}
+
+function setDMS(prefix, decimal) {
+    var dms = decimalToDMS(parseFloat(normalizeDecimal(decimal)));
+    document.getElementById(prefix + "D").value = dms[0];
+    document.getElementById(prefix + "M").value = dms[1];
+    document.getElementById(prefix + "S").value = dms[2];
 }
 
 function updateDMSFields(decimalLatitude, decimalLongitude) {
-    if (decimalLatitude) {
-        var dmsLat = decimalToDMS(parseFloat(decimalLatitude));
-        var latD = document.getElementById("latitudeD");
-        var latM = document.getElementById("latitudeM");
-        var latS = document.getElementById("latitudeS");
-
-        latD.value = dmsLat[0];
-        latM.value = dmsLat[1];
-        latS.value = dmsLat[2];
-    }
-
-    if (decimalLongitude) {
-        var dmsLong = decimalToDMS(parseFloat(decimalLongitude));
-        var longD = document.getElementById("longitudeD");
-        var longM = document.getElementById("longitudeM");
-        var longS = document.getElementById("longitudeS");
-
-        longD.value = dmsLong[0];
-        longM.value = dmsLong[1];
-        longS.value = dmsLong[2];
-    }
+    if (decimalLatitude !== null && normalizeDecimal(decimalLatitude) !== '') setDMS("latitude", decimalLatitude);
+    if (decimalLongitude !== null && normalizeDecimal(decimalLongitude) !== '') setDMS("longitude", decimalLongitude);
 }
 
-// Use the same function for initial conversion and event listeners
 function convertDecimalToDMS() {
-    var latDecimal = document.getElementById("latitudeDecimal").value;
-    var longDecimal = document.getElementById("longitudeDecimal").value;
-    updateDMSFields(latDecimal, longDecimal);
+    updateDMSFields(document.getElementById("latitudeDecimal").value, document.getElementById("longitudeDecimal").value);
 }
 
-document.getElementById("latitudeDecimal").addEventListener("input", function () {
-    updateDMSFields(this.value, null);
-});
-
-document.getElementById("longitudeDecimal").addEventListener("input", function () {
-    updateDMSFields(null, this.value);
-});
-
-document.getElementById("altitude").addEventListener("input", function () {
-    updateDMSFields(null, this.value);
-});
-
-// Update Decimal Latitude on DMS Latitude Change
-function updateDecimalLatitude() {
-    var degrees = parseFloat(document.getElementById("latitudeD").value) || 0;
-    var minutes = parseFloat(document.getElementById("latitudeM").value) || 0;
-    var seconds = parseFloat(document.getElementById("latitudeS").value) || 0;
-    var decimal = DMSToDecimal(degrees, minutes, seconds);
-    document.getElementById("latitudeDecimal").value = decimal;
+function updateDecimal(prefix, targetId) {
+    var decimal = DMSToDecimal(
+        document.getElementById(prefix + "D").value,
+        document.getElementById(prefix + "M").value,
+        document.getElementById(prefix + "S").value
+    );
+    document.getElementById(targetId).value = decimal.toFixed(6);
+    checkFields();
 }
 
-// Update Decimal Longitude on DMS Longitude Change
-function updateDecimalLongitude() {
-    var degrees = parseFloat(document.getElementById("longitudeD").value) || 0;
-    var minutes = parseFloat(document.getElementById("longitudeM").value) || 0;
-    var seconds = parseFloat(document.getElementById("longitudeS").value) || 0;
-    var decimal = DMSToDecimal(degrees, minutes, seconds);
-    document.getElementById("longitudeDecimal").value = decimal;
-}
+document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('latitudeDecimal').addEventListener('input', function () {
+        updateDMSFields(this.value, null);
+        checkFields();
+    });
+    document.getElementById('longitudeDecimal').addEventListener('input', function () {
+        updateDMSFields(null, this.value);
+        checkFields();
+    });
+    document.getElementById('altitude').addEventListener('input', checkFields);
+    ["latitudeD", "latitudeM", "latitudeS"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", function () { updateDecimal("latitude", "latitudeDecimal"); });
+    });
+    ["longitudeD", "longitudeM", "longitudeS"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", function () { updateDecimal("longitude", "longitudeDecimal"); });
+    });
 
-// Latitude DMS Change Listeners
-document.getElementById("latitudeD").addEventListener("input", updateDecimalLatitude);
-document.getElementById("latitudeM").addEventListener("input", updateDecimalLatitude);
-document.getElementById("latitudeS").addEventListener("input", updateDecimalLatitude);
+    document.getElementById('gps_form').addEventListener('submit', function (e) {
+        Object.keys(DECIMAL_FIELDS).forEach(function (id) {
+            var el = document.getElementById(id);
+            el.value = normalizeDecimal(el.value);
+        });
+        if (!checkFields()) {
+            e.preventDefault();
+            M.toast({html: {{ _('Please fix the validation errors before saving')|tojson }}, classes: 'red'});
+        }
+    });
 
-// Longitude DMS Change Listeners
-document.getElementById("longitudeD").addEventListener("input", updateDecimalLongitude);
-document.getElementById("longitudeM").addEventListener("input", updateDecimalLongitude);
-document.getElementById("longitudeS").addEventListener("input", updateDecimalLongitude);
+    checkFields();
+    setBrowserDateTime();
+    convertDecimalToDMS();
+});
 </script>
 {% endblock %}

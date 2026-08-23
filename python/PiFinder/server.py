@@ -367,13 +367,6 @@ class Server:
         def remote():
             return app.jinja_env.get_template("remote.html").render(title=_("Remote"))
 
-        @app.route("/advanced")
-        @auth_required
-        def advanced():
-            return app.jinja_env.get_template("advanced.html").render(
-                title=_("Advanced")
-            )
-
         @app.route("/network")
         @auth_required
         def network_page():

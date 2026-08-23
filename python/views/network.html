@@ -56,7 +56,7 @@
         <form class="col s12" action="/network/add" method="post" id="new_network_form">
           <div class="row">
             <div class="input-field col s12">
-              <input placeholder="SSID" id="ssid" type="text" name="ssid">
+              <input placeholder="{{ _('SSID') }}" id="ssid" type="text" name="ssid" required>
               <label for="ssid">{{ _('Name') }}</label>
             </div>
           </div>
@@ -73,9 +73,9 @@
           </div>
           <div class="row">
             <div class="input-field col s12">
-              <a href="#" class="btn modal-trigger" onClick="document.getElementById('new_network_form').submit();">{{ _('Save') }}</a>
+              <button type="submit" class="btn">{{ _('Save') }}</button>
               &nbsp;
-              <a href="/network" class="btn modal-trigger">{{ _('Cancel') }}</a>
+              <a href="/network" class="btn">{{ _('Cancel') }}</a>
             </div>
           </div>
         </form>

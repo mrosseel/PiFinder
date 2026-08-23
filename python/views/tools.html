@@ -46,7 +46,7 @@
         <p class="grey-text">{{ _('You can download a zip file of all your personal settings, observations and observing lists for safe keeping.') }}</p>
     </div>
     <div class="row">
-        <a href="/tools/backup" class="btn modal-trigger">{{ _('Download Backup File') }}</a>
+        <a href="/tools/backup" class="btn">{{ _('Download Backup File') }}</a>
     </div>
     <div class="row">
         <hr>
@@ -57,7 +57,7 @@
             <div class="file-field input-field">
                 <div class="btn grey lighten-2 grey-text text-darken-3">
                     <span>{{ _('Choose file') }}</span>
-                    <input name="backup_file" type="file" />
+                    <input name="backup_file" type="file" accept=".zip" required />
                     </div>
                     <div class="file-path-wrapper">
                     <input class="file-path validate" type="text"
@@ -79,7 +79,7 @@
     <p>{{ _('This will use the provided file to restore your user data. This will overwrite any existing preference and observations. Are you sure?') }}</p>
   </div>
   <div class="modal-footer">
-    <a href="#" onClick="document.getElementById('restore_form').submit();" class="modal-close btn-flat">{{ _('Do It') }}</a>
+    <button type="button" onClick="document.getElementById('restore_form').requestSubmit();" class="modal-close btn-flat">{{ _('Do It') }}</button>
     <a href="#!" class="modal-close btn-flat">{{ _('Cancel') }}</a>
   </div>
 </div>

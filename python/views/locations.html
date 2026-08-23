@@ -84,19 +84,19 @@
               <td>{{ location.source }}</td>
               <td>
                 <form method="post" action="/locations/load/{{ loop.index0 }}" class="inline-form">
-                  <button type="submit" class="waves-effect waves-light btn-small" title="{{ _('Load Location') }}" aria-label="{{ _('Load Location') }}">
+                  <button type="submit" class="waves-effect waves-light btn-small" title={{ _('Load Location')|tojson }} aria-label={{ _('Load Location')|tojson }}>
                     <i class="material-icons">location_on</i>
                   </button>
                 </form>
                 <form method="post" action="/locations/set_default/{{ loop.index0 }}" class="inline-form">
-                  <button type="submit" class="waves-effect waves-light btn-small" title="{{ _('Set as Default') }}" aria-label="{{ _('Set as Default') }}">
+                  <button type="submit" class="waves-effect waves-light btn-small" title={{ _('Set as Default')|tojson }} aria-label={{ _('Set as Default')|tojson }}>
                     <i class="material-icons">star</i>
                   </button>
                 </form>
-                <a href="#rename-modal-{{ loop.index0 }}" class="waves-effect waves-light btn-small modal-trigger" title="{{ _('Edit') }}">
+                <a href="#rename-modal-{{ loop.index0 }}" class="waves-effect waves-light btn-small modal-trigger" title={{ _('Edit')|tojson }}>
                   <i class="material-icons">edit</i>
                 </a>
-                <a href="#delete-modal-{{ loop.index0 }}" class="waves-effect waves-light btn-small red modal-trigger" title="{{ _('Delete') }}">
+                <a href="#delete-modal-{{ loop.index0 }}" class="waves-effect waves-light btn-small red modal-trigger" title={{ _('Delete')|tojson }}>
                   <i class="material-icons">delete</i>
                 </a>
               </td>
@@ -119,6 +119,7 @@
           <div class="input-field col s12">
             <input id="name-edit_form_{{ loop.index0 }}" type="text" name="name" value="{{ location.name }}" required/>
             <label for="name-edit_form_{{ loop.index0 }}">{{ _('Location Name') }}</label>
+            <span class="helper-text"></span>
           </div>
         </div>
         <div class="row">
@@ -198,7 +199,7 @@
 <div id="delete-modal-{{ loop.index0 }}" class="modal">
   <div class="modal-content">
     <h4>{{ _('Confirm Delete') }}</h4>
-    <p>{{ _('Are you sure you want to delete the location') }} "<strong>{{ location.name }}</strong>"? {{ _('This action cannot be undone.') }}</p>
+    <p>{{ _('Are you sure you want to delete the location "%(name)s"?') % {'name': location.name} }} {{ _('This action cannot be undone.') }}</p>
   </div>
   <div class="modal-footer">
     <a href="#!" class="modal-close waves-effect waves-light btn grey">{{ _('Cancel') }}</a>
@@ -212,53 +213,6 @@
 
 {% block scripts %}
 <script>
-// Accept both period and comma as the decimal separator, normalising to period
-function normalizeDecimal(value) {
-    if (value === null || value === undefined) return '';
-    return String(value).trim().replace(',', '.');
-}
-
-// Conversion from Decimal to DMS
-function decimalToDMS(decimal) {
-    var degrees = Math.floor(decimal);
-    var minutes = Math.floor((Math.abs(decimal) * 3600) / 60) % 60;
-    var seconds = Math.abs(decimal * 3600) % 60;
-    seconds = Math.round(seconds * 100) / 100;
-    if (seconds === 60) {
-        seconds = 0;
-        minutes += 1;
-    }
-    if (minutes === 60) {
-        minutes = 0;
-        degrees += (decimal >= 0 ? 1 : -1);
-    }
-    return [degrees, minutes, seconds];
-}
-
-// Conversion from DMS to Decimal
-function DMSToDecimal(degrees, minutes, seconds) {
-    // Ensure all inputs are numbers and default missing values to 0
-    degrees = parseFloat(normalizeDecimal(degrees)) || 0;
-    minutes = parseFloat(normalizeDecimal(minutes)) || 0;
-    seconds = parseFloat(normalizeDecimal(seconds)) || 0;
-    
-    // Validate minutes and seconds are in valid ranges
-    if (minutes < 0 || minutes >= 60) {
-        console.warn('Minutes should be between 0 and 59.999...');
-        minutes = Math.abs(minutes) % 60;
-    }
-    if (seconds < 0 || seconds >= 60) {
-        console.warn('Seconds should be between 0 and 59.999...');  
-        seconds = Math.abs(seconds) % 60;
-    }
-    
-    // Determine sign from degrees (negative degrees indicate southern/western coordinates)
-    var sign = degrees < 0 ? -1 : 1;
-    
-    // Calculate decimal: degrees + minutes/60 + seconds/3600
-    return sign * (Math.abs(degrees) + (minutes / 60) + (seconds / 3600));
-}
-
 function validateDMSFields(id = '') {
     var latD = document.getElementById("latitudeD-" + id);
     var latM = document.getElementById("latitudeM-" + id);
@@ -285,13 +239,13 @@ function updateDMSFields(decimalLatitude, decimalLongitude, id = '') {
     const lonSField = document.getElementById("longitudeS-" + id);
     
     if (decimalLatitude && latDField && latMField && latSField) {
-        var dmsLat = decimalToDMS(parseFloat(decimalLatitude));
+        var dmsLat = decimalToDMS(parseFloat(normalizeDecimal(decimalLatitude)));
         latDField.value = dmsLat[0];
         latMField.value = dmsLat[1];
         latSField.value = dmsLat[2];
     }
     if (decimalLongitude && lonDField && lonMField && lonSField) {
-        var dmsLong = decimalToDMS(parseFloat(decimalLongitude));
+        var dmsLong = decimalToDMS(parseFloat(normalizeDecimal(decimalLongitude)));
         lonDField.value = dmsLong[0];
         lonMField.value = dmsLong[1];
         lonSField.value = dmsLong[2];
@@ -394,33 +348,11 @@ function setupDecimalValidation(id = '') {
 }
 
 function focusFirstDMSField(id = '') {
-    var latS = document.getElementById("latitudeS-" + id);
-    if (latS.offsetParent !== null) {
-        ["latitudeS", "latitudeM", "latitudeD", "longitudeS", "longitudeM", "longitudeD"].forEach(field => {
-            document.getElementById(field + "-" + id).focus();
-        });
+    var latD = document.getElementById("latitudeD-" + id);
+    if (latD.offsetParent !== null) {
+        latD.focus();
     } else {
         setTimeout(function() { focusFirstDMSField(id); }, 50);
-    }
-}
-
-function validateField(value, fieldName) {
-    value = normalizeDecimal(value);
-    if (value === '') return false;
-    const numValue = parseFloat(value);
-    if (isNaN(numValue)) return false;
-    
-    switch(fieldName) {
-        case 'latitude':
-            return numValue >= -90 && numValue <= 90;
-        case 'longitude':
-            return numValue >= -180 && numValue <= 180;
-        case 'altitude':
-            return numValue >= -1000 && numValue <= 10000;
-        case 'error_in_m':
-            return numValue >= 0 && numValue <= 10000;
-        default:
-            return true;
     }
 }
 
@@ -429,8 +361,9 @@ function updateNumericFieldValidation(field, fieldName, id = '', forceShowError 
     const value = field.value.trim();
     const isValid = validateField(value, fieldName);
     const showError = forceShowError || field.dataset.hasInteracted === 'true';
-    
+
     field.classList.remove('invalid');
+    if (!helperText) { return isValid; }
     helperText.classList.remove('red-text');
     helperText.textContent = '';
     
@@ -438,22 +371,22 @@ function updateNumericFieldValidation(field, fieldName, id = '', forceShowError 
         field.classList.add('invalid');
         helperText.classList.add('red-text');
         if (value === '') {
-            helperText.textContent = "{{ _('This field is required') }}";
+            helperText.textContent = {{ _('This field is required')|tojson }};
         } else if (isNaN(parseFloat(value))) {
-            helperText.textContent = "{{ _('Must be a valid number') }}";
+            helperText.textContent = {{ _('Must be a valid number')|tojson }};
         } else {
             switch(fieldName) {
                 case 'latitude':
-                    helperText.textContent = "{{ _('Must be between -90 and 90') }}";
+                    helperText.textContent = {{ _('Must be between -90 and 90')|tojson }};
                     break;
                 case 'longitude':
-                    helperText.textContent = "{{ _('Must be between -180 and 180') }}";
+                    helperText.textContent = {{ _('Must be between -180 and 180')|tojson }};
                     break;
                 case 'altitude':
-                    helperText.textContent = "{{ _('Must be between -1000 and 10000 meters') }}";
+                    helperText.textContent = {{ _('Must be between -1000 and 10000 meters')|tojson }};
                     break;
                 case 'error_in_m':
-                    helperText.textContent = "{{ _('Must be between 0 and 10000 meters') }}";
+                    helperText.textContent = {{ _('Must be between 0 and 10000 meters')|tojson }};
                     break;
             }
         }
@@ -518,15 +451,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         const helperText = this.parentElement.querySelector('.helper-text');
                         const value = this.value.trim();
                         const isValid = value !== '';
-                        
+
                         this.classList.remove('invalid');
+                        if (!helperText) { checkFields(id); return; }
                         helperText.classList.remove('red-text');
                         helperText.textContent = '';
                         
                         if (!isValid && this.dataset.hasInteracted === 'true') {
                             this.classList.add('invalid');
                             helperText.classList.add('red-text');
-                            helperText.textContent = "{{ _('This field is required') }}";
+                            helperText.textContent = {{ _('This field is required')|tojson }};
                         }
                     }
                     checkFields(id);
@@ -551,7 +485,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             if (!allValid) {
                 e.preventDefault();
-                M.toast({html: "{{ _('Please fix the validation errors before saving') }}", classes: 'red'});
+                M.toast({html: {{ _('Please fix the validation errors before saving')|tojson }}, classes: 'red'});
                 
                 Object.entries(fields).forEach(([fieldName, field]) => {
                     if (field && fieldName !== 'name') {
@@ -575,15 +509,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     const helperText = field.parentElement.querySelector('.helper-text');
                     const value = field.value.trim();
                     const isValid = value !== '';
-                    
+
                     field.classList.remove('invalid');
+                    if (!helperText) { return; }
                     helperText.classList.remove('red-text');
                     helperText.textContent = '';
                     
                     if (!isValid) {
                         field.classList.add('invalid');
                         helperText.classList.add('red-text');
-                        helperText.textContent = "{{ _('This field is required') }}";
+                        helperText.textContent = {{ _('This field is required')|tojson }};
                     }
                 }
             }
