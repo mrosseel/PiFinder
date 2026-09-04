@@ -12,6 +12,7 @@ from PiFinder.object_images import get_display_image
 from PiFinder.object_images.image_base import ImageType
 from PiFinder.object_images.image_utils import (
     extent_perimeter_polylines,
+    eyepiece_image_rotation,
     project_radec_to_chart,
 )
 from PiFinder.object_images.star_catalog import CatalogState
@@ -490,10 +491,8 @@ class UIObjectDetails(UIModule):
         # Capture the exact geometry the Gaia chart is rendered with, so the
         # per-frame extent overlay projects onto the same pixels as the baked
         # stars (which don't re-rotate as the live solution drifts). Mirrors
-        # GaiaChartGenerator.render_chart: reflector adds a 180° base rotation.
-        telescope = self.config_object.equipment.active_telescope
-        image_rotate = 180.0 if (telescope and telescope.obstruction_perc > 0) else 0.0
-        image_rotate += roll
+        # GaiaChartGenerator uses the fixed parity-preserving 180° baseline.
+        image_rotate = eyepiece_image_rotation(roll)
         self._chart_geom = {
             "center_ra": self.object.ra,
             "center_dec": self.object.dec,
@@ -512,60 +511,67 @@ class UIObjectDetails(UIModule):
                 f">>> Using configured eyepiece: {eyepiece_text}, tfov={tfov}, mag={magnification}"
             )
 
-        # Get or create chart generator (owned by UI layer)
-        logger.info(">>> Getting chart generator...")
-        chart_gen = self._get_gaia_chart_generator()
-        logger.info(
-            f">>> Chart generator obtained, state: {chart_gen.get_catalog_state() if chart_gen else 'None'}"
-        )
-
-        logger.info(
-            f">>> Calling get_display_image with force_gaia_chart={self._force_gaia_chart}"
-        )
-
-        # get_display_image returns either an image directly (POSS) or a generator (Gaia chart)
-        result = get_display_image(
-            self.object,
-            eyepiece_text,
-            tfov,
-            roll,
-            self.display_class,
-            burn_in=self.object_display_mode == DM_IMAGE,
-            magnification=magnification,
-            show_nsew=self.config_object.get_option("image_nsew", True),
-            show_bbox=self.config_object.get_option("image_bbox", True),
-            flip_image=flip_image,
-            flop_image=flop_image,
-            config_object=self.config_object,
-            shared_state=self.shared_state,
-            chart_generator=chart_gen,  # Pass our chart generator to object_images
-            force_chart=self._force_gaia_chart,  # Toggle state
-        )
-
-        # Check if it's a generator (progressive Gaia chart) or direct image (POSS)
-        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
-            # It's a generator - store it for progressive consumption by update()
+        # Only regenerate the display image when in image mode.
+        # DM_DESC/DM_LOCATE only need text info, not the image.
+        # Regenerating in non-image modes creates a generator that sets
+        # object_image=None, causing a black screen until consumed.
+        if self.object_display_mode == DM_IMAGE:
+            # Get or create chart generator (owned by UI layer)
+            logger.info(">>> Getting chart generator...")
+            chart_gen = self._get_gaia_chart_generator()
             logger.info(
-                ">>> get_display_image returned GENERATOR, storing for progressive updates..."
+                f">>> Chart generator obtained, state: {chart_gen.get_catalog_state() if chart_gen else 'None'}"
             )
-            self._chart_generator = result
-            self.object_image = None  # Will be set by first yield
-        else:
-            # Direct image (POSS)
-            logger.info(f">>> get_display_image returned direct image: {type(result)}")
-            self._chart_generator = None
-            self.object_image = result
 
-        logger.info(
-            f">>> update_object_info() complete, self.object_image is now: {type(self.object_image)}"
-        )
+            logger.info(
+                f">>> Calling get_display_image with force_gaia_chart={self._force_gaia_chart}"
+            )
 
-        # Track if we're showing a "Loading..." placeholder for chart
-        self._is_showing_loading_chart = (
-            self.object_image is not None
-            and hasattr(self.object_image, "image_type")
-            and self.object_image.image_type == ImageType.LOADING
-        )
+            # get_display_image returns either an image directly (POSS) or a generator (Gaia chart)
+            result = get_display_image(
+                self.object,
+                eyepiece_text,
+                tfov,
+                roll,
+                self.display_class,
+                burn_in=True,
+                magnification=magnification,
+                show_nsew=self.config_object.get_option("image_nsew", True),
+                show_bbox=self.config_object.get_option("image_bbox", True),
+                flip_image=flip_image,
+                flop_image=flop_image,
+                config_object=self.config_object,
+                shared_state=self.shared_state,
+                chart_generator=chart_gen,  # Pass our chart generator to object_images
+                force_chart=self._force_gaia_chart,  # Toggle state
+            )
+
+            # Check if it's a generator (progressive Gaia chart) or direct image (POSS)
+            if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+                # It's a generator - store it for progressive consumption by update()
+                logger.info(
+                    ">>> get_display_image returned GENERATOR, storing for progressive updates..."
+                )
+                self._chart_generator = result
+                self.object_image = None  # Will be set by first yield
+            else:
+                # Direct image (POSS)
+                logger.info(
+                    f">>> get_display_image returned direct image: {type(result)}"
+                )
+                self._chart_generator = None
+                self.object_image = result
+
+            logger.info(
+                f">>> update_object_info() complete, self.object_image is now: {type(self.object_image)}"
+            )
+
+            # Track if we're showing a "Loading..." placeholder for chart
+            self._is_showing_loading_chart = (
+                self.object_image is not None
+                and hasattr(self.object_image, "image_type")
+                and self.object_image.image_type == ImageType.LOADING
+            )
 
     @property
     def _is_gaia_chart(self):
