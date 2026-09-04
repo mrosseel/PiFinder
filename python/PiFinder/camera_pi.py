@@ -23,6 +23,29 @@ import time
 logger = logging.getLogger("Camera.Pi")
 
 
+def optical_black_pedestal(metadata, bit_depth):
+    """Return the per-frame optical-black level in native raw ADU.
+
+    libcamera reports SensorBlackLevels on a 16-bit scale.  The patched
+    IMX290/462 helper marks a measured value with a one-count sentinel in the
+    fourth channel; an unpatched stack's static tuning value is therefore not
+    mistaken for a measurement.
+    """
+    levels = metadata.get("SensorBlackLevels")
+    if not isinstance(levels, (tuple, list)) or len(levels) != 4:
+        return None
+    values = np.asarray(levels, dtype=np.float64)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        return None
+    if not (values[0] == values[1] == values[2] and values[3] == values[0] + 1):
+        return None
+    scale = float(1 << (16 - int(bit_depth)))
+    pedestal = float(values[0] / scale)
+    if pedestal <= 0 or pedestal >= 2 ** int(bit_depth):
+        return None
+    return pedestal
+
+
 class CameraPI(CameraInterface):
     """The camera class for PI cameras.  Implements the CameraInterface interface."""
 
@@ -107,6 +130,12 @@ class CameraPI(CameraInterface):
         # driver chooses to report.
         self.last_frame_metadata = metadata
 
+        frame_optical_black = None
+        if self.camera_type in ("imx290", "imx462"):
+            frame_optical_black = optical_black_pedestal(
+                metadata, self.profile.bit_depth
+            )
+
         _request.release()
 
         # Apply camera-specific crop and rotation
@@ -127,6 +156,7 @@ class CameraPI(CameraInterface):
                 radiometer_exposure,
                 sequence=self._radiometer_sequence,
                 captured_at=time.time(),
+                optical_black_pedestal=frame_optical_black,
             )
             if sample is not None:
                 self.shared_state.set_sqm_radiometer_sample(sample)
@@ -204,6 +234,12 @@ class CameraPI(CameraInterface):
         For RGB sensors:
         - Converts to grayscale
         - Saves without Bayer pattern suffix
+
+        The square crop is never applied here, and there is deliberately no
+        option to apply it. The crop is a plain slice, so the full frame is a
+        superset and ``profile.ensure_cropped()`` reproduces the cropped frame
+        from it exactly -- while margins not written now are gone for good.
+        Live photometry is unaffected: it reads ``cam_raw()``, still the crop.
         """
         _request = self.camera.capture_request()
         # raw is actually 16 bit
@@ -220,14 +256,18 @@ class CameraPI(CameraInterface):
 
         _request.release()
 
-        # Apply camera-specific crop and rotation (preserves Bayer pattern alignment)
-        raw_capture = self.profile.crop_and_rotate(raw_capture)
-
-        # Expose this frame's driver metadata and cropped raw pixels so the
+        # Expose this frame's driver metadata and its CROPPED pixels so the
         # sweep capture can record per-image radiometry (exposure sweeps are
         # the only caller; both are overwritten on every raw capture).
-        self.last_raw_frame_metadata = metadata
-        self.last_raw_frame = raw_capture
+        #
+        # Note the asymmetry, and that it is deliberate: the TIFF written below
+        # is full-sensor, while these statistics cover the crop. They are the
+        # black-level-versus-temperature series, and the vignetted margins
+        # would shift every mean and percentile, silently ending comparability
+        # with the archive taken before sweeps went full-sensor. Full-sensor
+        # statistics stay computable from the TIFF.
+        self.last_frame_driver_metadata = metadata
+        self.last_cropped_frame = self.profile.crop_and_rotate(raw_capture)
 
         # Determine if we need to flag for debayering
         needs_debayer = False

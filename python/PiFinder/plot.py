@@ -10,6 +10,7 @@ import os
 import numpy as np
 import pandas
 from pathlib import Path
+from typing import Optional, Sequence, Tuple
 from PiFinder import utils
 from PiFinder import timez
 from PIL import Image, ImageDraw, ImageChops
@@ -22,7 +23,41 @@ from PiFinder.calc_utils import sf_utils
 
 logger = logging.getLogger("Plot")
 
+# Below this ratio of camera field to chart field there is no frustum worth
+# drawing: the box would be within a pixel or two of the chart edge, so it
+# would shade nothing and exclude nothing.
+_FRUSTUM_MIN_RATIO = 0.99
+
 _RAW_STARS_DF = None
+
+
+def frustum_box(
+    render_size: Tuple[int, int], fov: float, camera_fov: Optional[float]
+) -> Optional[Tuple[float, float, float, float]]:
+    """Screen-space box the camera images, or None when there is no frustum.
+
+    Two different angles meet here and they are easy to confuse: ``fov`` is
+    the chart's zoom level, which the user changes, and ``camera_fov`` is the
+    angular width the camera images, which follows the fitted optical train.
+    The frustum is the second drawn inside the first.
+
+    ``camera_fov`` is None when the caller has not said what the camera
+    images. That is *no frustum*, not a default one -- there is no honest
+    stand-in, because the answer is a property of the hardware in front of
+    this particular device (an imx296 on the shipped lens images 13.71
+    degrees, an imx462 10.40, an HQ 10.33). A caller that wants a frustum
+    states one; a caller that does not gets the whole chart.
+    """
+    if camera_fov is None:
+        return None
+
+    ratio = camera_fov / fov
+    if ratio >= _FRUSTUM_MIN_RATIO:
+        return None
+
+    width, height = render_size
+    offset = (width - ratio * width) / 2
+    return (offset, offset, width - offset, height - offset)
 
 
 def _load_raw_stars():
@@ -183,23 +218,33 @@ class Starfield:
         mag_setting = mag_range[0] - ((mag_range[0] - mag_range[1]) * perc_fov)
         self.set_mag_limit(mag_setting)
 
-    def radec_to_xy(self, ra: float, dec: float) -> tuple[float, float]:
+    def radec_to_xy_many(
+        self, ra: Sequence[float], dec: Sequence[float]
+    ) -> tuple[list[float], list[float]]:
         """
-        Converts and RA/DEC to screen space x/y for the current projection
+        Converts a sequence of RA/DEC to screen space x/y for the current
+        projection, in the input order.
+
+        The expensive part of a projection is the DataFrame -> Star ->
+        ``observe`` round trip, and it costs the same for one position as for
+        fifty, so callers with more than one position to place (the chart's
+        center-object candidate set) should batch through here rather than
+        loop over ``radec_to_xy``.
         """
-        # Skyfield needs a DataFrame to build the Star; rotate/screen-space
-        # math is scalar numpy/python after that point.
+        if len(ra) == 0:
+            return [], []
+
+        # Skyfield needs a DataFrame to build the Stars; rotate/screen-space
+        # math is numpy after that point.
         marker_df = pandas.DataFrame(
             {
-                "ra_hours": [Angle(degrees=ra)._hours],
-                "dec_degrees": [dec],
+                "ra_hours": Angle(degrees=np.asarray(ra, dtype=np.float64))._hours,
+                "dec_degrees": np.asarray(dec, dtype=np.float64),
                 "epoch_year": 1991.25,
             }
         )
-        marker_position = self.earth.observe(Star.from_dataframe(marker_df))
-        x_arr, y_arr = self.projection(marker_position)
-        x = float(x_arr[0])
-        y = float(y_arr[0])
+        marker_positions = self.earth.observe(Star.from_dataframe(marker_df))
+        x, y = self.projection(marker_positions)
 
         roll_rad = self.roll * (np.pi / 180.0)
         roll_sin = np.sin(roll_rad)
@@ -209,7 +254,14 @@ class Starfield:
 
         x_pos = xr * self.pixel_scale + self.render_center[0]
         y_pos = -yr * self.pixel_scale + self.render_center[1]
-        return x_pos, y_pos
+        return [float(v) for v in x_pos], [float(v) for v in y_pos]
+
+    def radec_to_xy(self, ra: float, dec: float) -> tuple[float, float]:
+        """
+        Converts and RA/DEC to screen space x/y for the current projection
+        """
+        x_pos, y_pos = self.radec_to_xy_many([ra], [dec])
+        return x_pos[0], y_pos[0]
 
     def plot_markers(self, marker_list):
         """
@@ -345,12 +397,26 @@ class Starfield:
         self.projection = build_stereographic_projection(center)
 
     def plot_starfield(
-        self, ra, dec, roll, constellation_brightness=32, shade_frustrum: bool = False
+        self,
+        ra,
+        dec,
+        roll,
+        constellation_brightness=32,
+        shade_frustrum: bool = False,
+        camera_fov: Optional[float] = None,
     ):
         """
         Returns an image of the starfield at the
         provided RA/DEC/ROLL with or without
         constellation lines
+
+        camera_fov: angular width the camera images, from the live optical
+            train. Omit it for a chart with no frustum: the returned stars are
+            then everything on the chart, not everything the camera can see.
+            Passed per call rather than held on the object -- a Starfield is
+            expensive enough to be cached and shared (the API caches one
+            across concurrent requests), and per-render state on a shared
+            object is one request's value away from being another's.
         """
         self.update_projection(ra, dec)
         self.roll = roll
@@ -365,16 +431,24 @@ class Starfield:
         self._const_ex, self._const_ey = self.projection(self.const_end_star_positions)
 
         pil_image, visible_stars = self.render_starfield_pil(
-            constellation_brightness, shade_frustrum
+            constellation_brightness, shade_frustrum, camera_fov
         )
         return pil_image, visible_stars
 
     def render_starfield_pil(
-        self, constellation_brightness: int, shade_frustrum: bool = False
+        self,
+        constellation_brightness: int,
+        shade_frustrum: bool = False,
+        camera_fov: Optional[float] = None,
     ):
         """
         constellation_brightness: intensity of constellation lines
-        shade_frustrum: Shade areas of the chart that are outside of the actual camera FOV
+        shade_frustrum: Dim the part of the chart the camera cannot see.
+            Needs a camera_fov; without one there is nothing to shade.
+        camera_fov: angular width the camera images. When given, the returned
+            visible_stars are restricted to that box -- they are the stars the
+            camera can see, which is what an alignment star has to be. When
+            omitted they are every star on the chart.
 
         returns (image, visible_stars)
         """
@@ -384,21 +458,10 @@ class Starfield:
         W, H = self.render_size
         cx, cy = self.render_center
 
-        frustrum_perc = 9.5 / self.fov
-        if shade_frustrum and frustrum_perc < 0.99:
+        frustum = frustum_box(self.render_size, self.fov, camera_fov)
+        if shade_frustrum and frustum is not None:
             idraw.rectangle([0, 0, W, H], fill=32)
-
-            # Calc square for in-frustrum
-            frustrum_offset = (W - frustrum_perc * W) / 2
-            idraw.rectangle(
-                [
-                    frustrum_offset,
-                    frustrum_offset,
-                    W - frustrum_offset,
-                    H - frustrum_offset,
-                ],
-                fill=0,
-            )
+            idraw.rectangle(list(frustum), fill=0)
 
         # prep rotate by roll....
         roll_rad = self.roll * (np.pi / 180.0)
@@ -475,18 +538,18 @@ class Starfield:
                     width=0,
                 )
 
-        # Frustrum filter for the returned visible_stars set.
-        if frustrum_perc < 0.99:
-            frustrum_offset = (W - frustrum_perc * W) / 2
-            in_frustrum = (
-                (x_pos > frustrum_offset)
-                & (x_pos < W - frustrum_offset)
-                & (y_pos > frustrum_offset)
-                & (y_pos < H - frustrum_offset)
+        # Frustum filter for the returned visible_stars set. Gated on the
+        # frustum existing, not on the shading: a caller can want the box
+        # marked or not, but if it stated a camera field of view it means the
+        # stars the camera can see. State no camera and this does not run.
+        if frustum is not None:
+            left, top, right, bottom = frustum
+            in_frustum = (
+                (x_pos > left) & (x_pos < right) & (y_pos > top) & (y_pos < bottom)
             )
-            visible_idx = visible_idx[in_frustrum]
-            x_pos = x_pos[in_frustrum]
-            y_pos = y_pos[in_frustrum]
+            visible_idx = visible_idx[in_frustum]
+            x_pos = x_pos[in_frustum]
+            y_pos = y_pos[in_frustum]
 
         # Rebuild visible_stars as a DataFrame for align.py compatibility:
         # it expects pandas semantics (.iloc, .sort_values, .assign) and

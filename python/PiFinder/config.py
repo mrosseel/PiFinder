@@ -13,6 +13,12 @@ import logging
 
 logger = logging.getLogger("config")
 
+_LEGACY_SCREEN_DIRECTIONS = {
+    "v4_left": "rev4_left",
+    "v4_right": "rev4_right",
+    "v4_straight": "rev4_straight",
+}
+
 
 class Config:
     def __init__(self):
@@ -38,6 +44,15 @@ class Config:
             with open(self.config_file_path, "r") as config_file:
                 logger.info("Loading config from %s", self.config_file_path)
                 self._config_dict = json.load(config_file)
+
+        # Configs written before the rev4 build variants were renamed
+        # (v4_* -> rev4_*) still hold the old values; unknown values crash
+        # ImuDeadReckoning, so normalize on every load.
+        legacy_direction = self._config_dict.get("screen_direction")
+        if legacy_direction in _LEGACY_SCREEN_DIRECTIONS:
+            self._config_dict["screen_direction"] = _LEGACY_SCREEN_DIRECTIONS[
+                legacy_direction
+            ]
 
         # open default default_config
         with open(self.default_file_path, "r") as config_file:
@@ -75,7 +90,19 @@ class Config:
             ):
                 eq_config["active_eyepiece_index"] = 0
 
-            self.equipment = equipment.Equipment.from_dict(eq_config)
+            try:
+                self.equipment = equipment.Equipment.from_dict(eq_config)
+            except (ValueError, TypeError, KeyError):
+                # A value the equipment dataclasses can't decode used to
+                # abort main() before the UI came up — an unusable PiFinder
+                # (#291).  Fall back to the defaults and keep booting; the
+                # web forms validate everything they write, so a config
+                # that lands here was hand-edited or written by an older
+                # release.
+                logger.exception(
+                    "Could not load saved equipment; falling back to defaults"
+                )
+                self.equipment = equipment.Equipment.from_dict(default_eq)
 
         # Load the locations config
         loc_config = self.get_option("locations")

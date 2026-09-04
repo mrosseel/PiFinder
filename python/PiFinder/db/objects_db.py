@@ -1,6 +1,6 @@
 import PiFinder.utils as utils
 from sqlite3 import Connection, Cursor
-from typing import Tuple, DefaultDict, List, Dict
+from typing import Tuple, DefaultDict, List, Dict, Optional
 from PiFinder.db.db import Database
 from collections import defaultdict
 import logging
@@ -12,6 +12,56 @@ class ObjectsDatabase(Database):
         conn, cursor = self.get_database(db_path)
         super().__init__(conn, cursor, db_path)
         self.bulk_mode = False
+
+        self._ensure_catalog_object_indexes()
+
+    def _ensure_catalog_object_indexes(self) -> None:
+        """
+        Backfills the catalog_objects indexes on an already-built database.
+
+        The shipped objects.db carries these indexes, so this is normally a
+        no-op. It exists for the databases that don't come from the shipped
+        file: ones built by a catalog import predating the indexes, or carried
+        across an update that replaces code without replacing the DB.
+        create_tables() only runs at import time, so nothing else would ever
+        add them.
+
+        Building them takes ~100ms once; thereafter the sqlite_master check
+        below costs a fraction of a millisecond, so this is safe to run on
+        every open.
+
+        Failure is not fatal: several processes open this DB and may race for
+        the write lock, and the DB may sit on read-only media. Either way the
+        queries still return correct results -- just slowly, exactly as before
+        -- so we log and carry on rather than taking startup down with us.
+        """
+        try:
+            present = self.cursor.execute(
+                """
+                select count(*) as n from sqlite_master
+                where type = 'index' and name in (
+                    'idx_catalog_objects_object_id',
+                    'idx_catalog_objects_code_sequence'
+                )
+                """
+            ).fetchone()["n"]
+            if present == 2:
+                return
+
+            logging.info("Building catalog_objects indexes (one time)...")
+            start = time.time()
+            # Another process may be building them right now; wait rather than
+            # failing outright.
+            self.cursor.execute("PRAGMA busy_timeout = 30000;")
+            self.create_catalog_object_indexes()
+            self.conn.commit()
+            logging.info("Built catalog_objects indexes in %.1fs", time.time() - start)
+        except Exception:
+            logging.warning(
+                "Could not build catalog_objects indexes; "
+                "catalog lookups will be slower",
+                exc_info=True,
+            )
 
     def create_tables(self):
         # Create objects table
@@ -83,6 +133,8 @@ class ObjectsDatabase(Database):
         """
         )
 
+        self.create_catalog_object_indexes()
+
         # Create images_objects table
         self.cursor.execute(
             """
@@ -97,6 +149,31 @@ class ObjectsDatabase(Database):
 
         # Commit changes to the database
         self.conn.commit()
+
+    def create_catalog_object_indexes(self) -> None:
+        """
+        Creates the catalog_objects lookup indexes.
+
+        Both directions of the sky-object <-> catalog-listing mapping are hot
+        paths: get_catalog_objects_by_object_id() (an object's sibling
+        listings, e.g. M 31 / NGC 224) and get_catalog_object_by_sequence()
+        (resolving a listing back to its sky object, as the observed-objects
+        cache does for every logged listing). Unindexed, each is a full scan of
+        ~151k rows -- ~6ms on a laptop and far worse on a Pi's SD card, paid
+        per call.
+        """
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_catalog_objects_object_id
+            ON catalog_objects(object_id);
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_catalog_objects_code_sequence
+            ON catalog_objects(catalog_code, sequence);
+            """
+        )
 
     def get_pifinder_database(self) -> Tuple[Connection, Cursor]:
         return self.get_database(utils.pifinder_db)
@@ -282,6 +359,49 @@ class ObjectsDatabase(Database):
             (catalog_code, sequence),
         )
         return self.cursor.fetchone()
+
+    def get_object_ids_by_listings(
+        self, listings: List[Tuple[str, int]]
+    ) -> Dict[Tuple[str, int], Optional[int]]:
+        """
+        Maps many listings to their object ids in one pass.
+
+        Each listing is a (catalog_code, sequence) pair. Listings with no row
+        are absent from the result; a listing whose row carries a NULL
+        object_id maps to None, since the column is nullable. Keys come back
+        as the DB stored them, so a caller passing a sequence of a different
+        type than the column holds gets the stored form back, not what it
+        passed in.
+
+        Grouped by catalog code, one query per catalog (chunked so the
+        statement stays inside SQLite's variable limit). The grouping is what
+        makes idx_catalog_objects_code_sequence usable: SQLite drives that
+        index from an equality on catalog_code plus an IN list on sequence,
+        so each listing costs a probe. Do not fold this back into a single
+        `(catalog_code, sequence) IN (VALUES ...)` -- SQLite cannot drive a
+        two-column index from a row-value list, and falls back to scanning
+        the whole of every catalog named in the list. With WDS holding ~131k
+        of the ~151k rows, a single logged double star would then cost more
+        than the per-listing lookups this replaces.
+        """
+        result: Dict[Tuple[str, int], Optional[int]] = {}
+        sequences_by_catalog: DefaultDict[str, List[int]] = defaultdict(list)
+        for catalog_code, sequence in listings:
+            sequences_by_catalog[catalog_code].append(sequence)
+
+        chunk_size = 400
+        for catalog_code, sequences in sequences_by_catalog.items():
+            for start in range(0, len(sequences), chunk_size):
+                chunk = sequences[start : start + chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                self.cursor.execute(
+                    "SELECT catalog_code, sequence, object_id FROM catalog_objects "
+                    f"WHERE catalog_code = ? AND sequence IN ({placeholders});",
+                    [catalog_code, *chunk],
+                )
+                for row in self.cursor.fetchall():
+                    result[(row["catalog_code"], row["sequence"])] = row["object_id"]
+        return result
 
     def get_catalog_objects_by_catalog_code(self, catalog_code):
         self.cursor.execute(

@@ -18,6 +18,14 @@ Command set reference (key differences from SSD1351):
 
 from luma.oled.device.color import color_device
 
+#: Number of gray scale levels on the 5-bit color A and C channels. luma packs
+#: red as ``r & 0xF8``, so a red byte of 8*n selects gray level n.
+GRAY_SCALE_LEVELS = 31
+
+#: Dimmest gray level that still emits. Level 1 has only a pre-charge stage and
+#: no current drive at all (datasheet section 6.8), and measures as fully dark.
+MIN_GRAY_SCALE_LEVEL = 2
+
 
 class ssd1333(color_device):
     """
@@ -50,6 +58,11 @@ class ssd1333(color_device):
         (default: 0).
     :type v_offset: int
     """
+
+    #: Point table capping rendered pixels, or None to pass them through. Set
+    #: on the class so that display() is safe during the base constructor,
+    #: which clears and shows the screen before __init__ regains control.
+    _gray_scale_lut = None
 
     def __init__(
         self,
@@ -135,6 +148,85 @@ class ssd1333(color_device):
         """
         assert 0 <= level <= 15
         self.command(0xC7, level)
+
+    def gray_scale_ceiling(self, level):
+        """
+        Caps rendered pixels at gray scale ``level``, dimming by duty cycle
+        instead of by drive current.
+
+        This is a third brightness axis, independent of :func:`contrast` and
+        :func:`master_brightness`: those two set how much current a lit pixel
+        draws, while gray scale level sets how long it draws it for. In the
+        controller's built-in linear LUT level n is (n-1)*4 DCLKs wide, so
+        capping at level 2 is a 30x reduction. Because the pixel still turns
+        fully on for that time, this dims far below the point where current
+        control alone stops lighting the panel at all.
+
+        Rescaling pixel values is what makes this reach so low. The gray scale
+        tables can be rewritten to shorten the pulses directly, but their
+        entries must increase strictly, which both floors the top level at 30
+        DCLKs and -- measured on this panel -- produces visible artifacts well
+        before that. Capping the values fed to the built-in table is clean at
+        every level.
+
+        The rescale maps in emitted-light space, not level space: level n
+        emits in proportion to (n - 1), not n, so a pixel's fraction of full
+        light is (n - 1) / 30 and the level under ceiling L that preserves it
+        is 1 + (n - 1) * (L - 1) / 30. Scaling the level number directly
+        instead compounds the -1 offset as the ceiling falls -- mid-gray
+        pixels dim faster than bright ones and then land on the dark levels 0
+        and 1, which is exactly a contrast shift with brightness.
+
+        Dimming this way costs the UI tonal range, since its shades land on
+        the levels below the cap, so callers should hold the ceiling as high
+        as the target brightness allows.
+
+        :param level: Gray scale level full intensity maps to, 2-31. At 31,
+            the default, pixels reach the display unaltered.
+        :type level: int
+        """
+        assert MIN_GRAY_SCALE_LEVEL <= level <= GRAY_SCALE_LEVELS
+        if level == GRAY_SCALE_LEVELS:
+            self._gray_scale_lut = None
+            return
+        # luma keeps the top 5 bits of the red byte, so a pixel's native level
+        # is v // 8 and 8*n selects level n. Rounding to the nearest level (a
+        # multiple of 8) rather than letting luma truncate keeps shades from
+        # collapsing a level early. Pixel value 0 stays level 0; other dark
+        # levels map to 1, which never emits. One table per band, since
+        # point() wants all of them.
+        steps = GRAY_SCALE_LEVELS - 1
+        lut = [0]
+        for v in range(1, 256):
+            light = max(0, v // 8 - 1) / steps
+            lut.append(min(level, round(1 + light * (level - 1))) * 8)
+        self._gray_scale_lut = lut * 3
+
+    def precharge_voltage(self, level):
+        """
+        Sets the pre-charge voltage (0xBB, A[4:0]), as a fraction of VCC.
+
+        A brightness axis whose authority depends on the drive: it scales a
+        weakly driven pixel's light by up to 32x and a strongly driven one's
+        by ~1.3x (rig-measured; see docs/ax/display/ssd1333-response.md).
+        The cut-out edge moves with drive -- at the dimming policy's floor
+        state the panel is dark at code 3 and below. The brightness policy
+        walks codes 4..0x17 as its dimmest regime; the init sequence sets
+        0x17 (0.40 x VCC), which all bright-regime constants assume.
+
+        :param level: Pre-charge voltage code in the range 0-31.
+        :type level: int
+        """
+        assert 0 <= level <= 31
+        self.command(0xBB, level)
+
+    def display(self, image):
+        """
+        Renders an image, capped at the gray scale ceiling if one is set.
+        """
+        if self._gray_scale_lut is not None:
+            image = image.point(self._gray_scale_lut)
+        super().display(image)
 
     def command(self, cmd, *args):
         """

@@ -19,6 +19,7 @@ from typing import Any, TYPE_CHECKING
 from PiFinder import utils, calc_utils
 from PiFinder import timez
 from PiFinder.locations import Location as SavedLocation
+from PiFinder.optics import resolve_camera_profile, resolve_lens
 from PiFinder.state import Location
 from PiFinder.ui.base import UIModule
 from PiFinder.ui.textentry import UITextEntry
@@ -215,6 +216,69 @@ def switch_cam_imx462(ui_module: UIModule) -> None:
     restart_system(ui_module)
 
 
+def get_camera_lens(ui_module: UIModule) -> list[str]:
+    """Lens the device is currently working from.
+
+    Not simply the config value: an install that predates the setting has none
+    stored, and which lens that means depends on the detected sensor. Resolve
+    it the same way the solver does -- both halves through the tolerant
+    resolvers -- so the menu shows what is actually in force rather than an
+    arbitrary first entry, and so an unrecognised sensor leaves the lens menu
+    openable instead of raising while it is built.
+
+    Both halves come from ``shared_state`` for the same reason: it is the only
+    view of the lens that is current. This process loaded its ``Config`` at
+    boot and reloads it only on an explicit ``reload_config``, so once lens
+    self-heal writes a lens from the integrator (see
+    :class:`PiFinder.integrator.LensSelfHeal`), ``config_object`` still holds
+    the *assumed* lens. Reading it here would show the wrong lens on the one
+    screen whose whole job is to say which lens is fitted -- and because
+    ``text_menu`` writes the highlighted entry on select, confirming that
+    stale value would state a lens the device measured itself out of, tighten
+    the FOV gate around it, and stop solving for good (self-heal only ever
+    writes into an absence, so it cannot undo that). ``shared_state`` is
+    seeded from config when it is built and republished by both the menu's own
+    ``set_camera_lens`` and self-heal, so it is never behind.
+    """
+    profile = resolve_camera_profile(ui_module.shared_state.camera_type())
+    return [resolve_lens(profile, ui_module.shared_state.camera_lens()).key]
+
+
+def set_camera_lens(ui_module: UIModule) -> None:
+    """Publish a lens change, then restart so the solver rebuilds its state.
+
+    The live values do follow the lens on the next frame -- the solver
+    re-resolves the optical train per frame, so the FOV gate, radiometric
+    field width and frustum shading all update without a restart. Tetra3's
+    pattern cache does not. ``Tetra3._pattern_cache`` is keyed on the pattern
+    hash alone, but the value it stores was already pruned against whichever
+    FOV gate was in force when it was computed, and nothing invalidates it --
+    it is built once per ``Tetra3`` and only ever turns over by LRU eviction.
+    A lens change therefore leaves entries pruned for the *old* window in
+    place, and those can withhold the very patterns the new window needs, so
+    the change looks like it did not take until something restarts the solver.
+
+    Restarting is the honest fix at this layer. The cache is tetra3's and the
+    bug is upstream, but this is a once-per-device setting whose immediate
+    neighbours in the menu (PiFinder Type, Camera Type) already restart, so
+    the cost is one the user is not going to notice for a change they make
+    about this often.
+
+    The config is already persisted by the time this runs -- ``text_menu``
+    calls ``set_option`` before any ``post_callback`` -- so the restart cannot
+    lose the setting. The shared-state publish is kept ahead of it so the
+    change still lands when the restart is a no-op, as it is under
+    ``sys_utils_fake`` on a development machine.
+
+    If the lens named here is not the one fitted, solving stops outright --
+    deliberately, see docs/adr/0027.
+    """
+    lens_key = ui_module.config_object.get_option("camera_lens")
+    ui_module.shared_state.set_camera_lens(lens_key)
+    logger.info("Camera lens set to %s; restarting to rebuild solver state", lens_key)
+    restart_pifinder(ui_module)
+
+
 def get_camera_type(ui_module: UIModule) -> list[str]:
     return sys_utils.get_camera_type()
 
@@ -318,7 +382,10 @@ def set_time(ui_module: UIModule, time_str: str) -> None:
     """
     logger.info(f"Setting time to: {time_str}")
 
-    timezone_str = ui_module.shared_state.location().timezone
+    # Location.timezone is Optional and pytz.timezone(None) raises, so fall
+    # back rather than crash on commit. set_location already settles the zone
+    # to UTC when it cannot resolve one; this covers a Location built directly.
+    timezone_str = ui_module.shared_state.location().timezone or "UTC"
 
     # First create a datetime object (using today's date by default)
     dt = timez.parse(time_str, "%H:%M:%S")
@@ -348,7 +415,8 @@ def set_datetime(ui_module: UIModule, date_str: str) -> None:
     time_str = ui_module.item_definition.get("time_str", "00:00:00")
     logger.info(f"Setting datetime to: {date_str} {time_str}")
 
-    timezone_str = ui_module.shared_state.location().timezone
+    # See set_time: fall back rather than raise on an unresolved zone.
+    timezone_str = ui_module.shared_state.location().timezone or "UTC"
     timezone = pytz.timezone(timezone_str)
 
     dt = timez.parse(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
@@ -485,8 +553,9 @@ def generate_custom_object_name(ui_module: UIModule) -> str:
 
 
 def telemetry_record_toggle(ui_module: UIModule) -> None:
-    """Toggle telemetry recording on/off via integrator command queue."""
-    enabled = ui_module.config_object.get_option("telemetry_record")
+    """Flip telemetry recording on/off in place (inline menu toggle)."""
+    enabled = not ui_module.config_object.get_option("telemetry_record")
+    ui_module.config_object.set_option("telemetry_record", enabled)
     if "integrator" in ui_module.command_queues:
         if enabled:
             ui_module.command_queues["integrator"].put(("telemetry_record_on", None))
@@ -496,6 +565,21 @@ def telemetry_record_toggle(ui_module: UIModule) -> None:
             ui_module.message("Telemetry\nStopped", 2)
     else:
         ui_module.message("No integrator\nqueue", 2)
+
+
+def telemetry_record_suffix(ui_module: UIModule) -> str:
+    """Return ' On'/' Off' for the inline Record toggle's current state."""
+    return " On" if ui_module.config_object.get_option("telemetry_record") else " Off"
+
+
+def telemetry_section_toggle(ui_module: UIModule) -> None:
+    """Apply a telemetry section on/off change to any live recording.
+
+    The section flag is already persisted to config by the menu; nudge the
+    integrator's recorder to re-read it so the change takes effect mid-session.
+    """
+    if "integrator" in ui_module.command_queues:
+        ui_module.command_queues["integrator"].put(("telemetry_update_sections", None))
 
 
 def update_gpsd_baud_rate(ui_module: UIModule) -> None:

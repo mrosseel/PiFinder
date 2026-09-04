@@ -288,6 +288,7 @@ class SharedStateObj:
         }
         self.__solution: PointingEstimate = PointingEstimate()
         self.__sats = None
+        self.__gps_comms = None
         self.__imu = None
         self.__battery = None
         self.__hardware = None
@@ -305,6 +306,15 @@ class SharedStateObj:
         self.__arch = None
         self.__camera_align = False
         self.__camera_type = "imx296"  # Default, will be set by camera process
+        # Configured lens, the half of the optical train nothing can detect.
+        # None means "not stated", which resolves to the sensor's shipped lens
+        # -- that is what lets installs predating this setting keep working.
+        self.__camera_lens = config.Config().get_option("camera_lens")
+        # Whether the frames arriving actually came through the optics the two
+        # halves above describe. True until a camera says otherwise, so the
+        # window before the camera process reports behaves like the hardware
+        # case rather than silently dropping the FOV gate on every boot.
+        self.__optical_train_known = True
         # Degrees the camera process rotates the solve/display image relative
         # to the stored raw frame (PIL CCW). None until the camera reports.
         self.__solve_image_rotation = None
@@ -382,11 +392,47 @@ class SharedStateObj:
     def set_camera_type(self, v: str):
         self.__camera_type = v
 
+    def camera_lens(self) -> Optional[str]:
+        """Configured lens key, or None when the config states none."""
+        return self.__camera_lens
+
+    def set_camera_lens(self, v: Optional[str]):
+        """Publish a lens change so the solver picks it up on the next frame.
+
+        The solver derives its FOV gate from this, so it must be the key of a
+        registered lens (see PiFinder.optics.LENSES) or None.
+        """
+        self.__camera_lens = v
+
+    def optical_train_known(self) -> bool:
+        """False when the frames did not come through this device's optics.
+
+        See ``CameraInterface.optical_train_known``. Read alongside
+        ``camera_type``/``camera_lens`` rather than instead of them: the train
+        still resolves, it just does not describe the frames.
+        """
+        return self.__optical_train_known
+
+    def set_optical_train_known(self, v: bool):
+        self.__optical_train_known = bool(v)
+
     def sats(self):
         return self.__sats
 
     def set_sats(self, v):
         self.__sats = v
+
+    def gps_comms(self):
+        """The most recent GPS event as ``(name, monotonic_stamp)``, or None
+        when nothing has been received this session. The name is a message
+        class (``NAV-SOL``) or a marker (``?CKSUM``). The stamp is the main
+        process's ``time.monotonic()`` reading when the event was drained off
+        ``gps_queue``, so only that process can meaningfully subtract it --
+        see docs/ax/gps/CONTEXT.md."""
+        return self.__gps_comms
+
+    def set_gps_comms(self, v):
+        self.__gps_comms = v
 
     def imu(self):
         return self.__imu
@@ -396,7 +442,7 @@ class SharedStateObj:
 
     def battery(self):
         """Latest BatteryState, or None when no charger is present
-        (rev-3 hardware / monitor not running). None is distinct from a
+        (rev3 hardware / monitor not running). None is distinct from a
         low state_of_charge_pct -- see docs/ax/battery/CONTEXT.md."""
         return self.__battery
 
@@ -426,9 +472,17 @@ class SharedStateObj:
 
     def set_location(self, v):
         # if value is not none, set the timezone
-        # before saving the value
+        # before saving the value.
+        #
+        # timezone_at() returns None for coordinates it cannot resolve, and
+        # assigning that raw would overwrite Location's "UTC" default with a
+        # value every reader has to guard: pytz.timezone(None) raises
+        # UnknownTimeZoneError, so an unresolved zone would crash the manual
+        # time-entry callbacks rather than degrade. UTC is already the
+        # documented fallback for an unknown zone (see local_datetime /
+        # ADR-0018), so settle it here and keep the field a usable zone name.
         if v:
-            v.timezone = self.__tz_finder.timezone_at(lat=v.lat, lng=v.lon)
+            v.timezone = self.__tz_finder.timezone_at(lat=v.lat, lng=v.lon) or "UTC"
         self.__location = v
 
     def sqm(self):

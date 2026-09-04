@@ -68,10 +68,14 @@ def _json_safe(value):
     return str(value)
 
 
-def sweep_frame_record(index, exp_us, driver_metadata, raw_frame, bit_depth):
+def sweep_frame_record(index, exp_us, driver_metadata, cropped_frame, bit_depth):
     """Build one sweep image's metadata record: the camera settings actually
-    applied (from driver metadata) plus ADU statistics of the raw frame as
-    saved in the TIFF (pre-bias-subtraction)."""
+    applied (from driver metadata) plus ADU statistics of the raw frame
+    (pre-bias-subtraction).
+
+    The statistics cover the square crop, while the TIFF alongside holds the
+    whole sensor. Keeping them on the crop is what makes the black-level
+    series comparable with sweeps taken before the archive went full-sensor."""
     camera_metadata = {
         key: _json_safe(driver_metadata.get(key)) if driver_metadata else None
         for key in SWEEP_FRAME_METADATA_KEYS
@@ -90,10 +94,16 @@ def sweep_frame_record(index, exp_us, driver_metadata, raw_frame, bit_depth):
             _json_safe(driver_metadata) if driver_metadata else None
         ),
     }
-    if raw_frame is not None:
-        frame = raw_frame.astype(np.float64)
+    if cropped_frame is not None:
+        frame = cropped_frame.astype(np.float64)
         p = np.percentile(frame, [1, 5, 25, 50, 75, 95, 99])
         record["raw_stats"] = {
+            # Which pixels these numbers cover. The sibling TIFF is
+            # full-sensor, so without this the two would silently be
+            # assumed to describe the same pixels. Sweeps from before the
+            # archive went full-sensor have no such key; there the TIFF
+            # was the crop too, so it meant the same thing either way.
+            "extent": "crop",
             "mean_adu": float(frame.mean()),
             "median_adu": float(p[3]),
             "std_adu": float(frame.std()),
@@ -110,7 +120,7 @@ def sweep_frame_record(index, exp_us, driver_metadata, raw_frame, bit_depth):
         }
         if bit_depth:
             record["raw_stats"]["saturated_fraction"] = float(
-                np.mean(raw_frame >= 2**bit_depth - 1)
+                np.mean(cropped_frame >= 2**bit_depth - 1)
             )
     return record
 
@@ -129,9 +139,9 @@ SCREEN_ROTATE_AMOUNTS = {
     "flat3": 90,
     "as_bloom": 90,
     "as_heart": 90,
-    "v4_left": 0,
-    "v4_right": 270,
-    "v4_straight": 270,
+    "rev4_left": 0,
+    "rev4_right": 270,
+    "rev4_straight": 270,
 }
 
 
@@ -174,6 +184,37 @@ class CameraInterface:
 
     def capture_raw_file(self, filename) -> None:
         pass
+
+    def _settle_exposure(self, requested_us, max_frames=8, tolerance=0.02):
+        """Discard frames until the sensor actually delivers `requested_us`.
+
+        A fixed flush count cannot be right for every sensor: the IMX290/462
+        serves exactly three frames at the old exposure after a change, while
+        the IMX477 emits half-exposure transitional frames instead. Flushing
+        two frames -- as this did -- left the next capture still on the old
+        exposure, so a sweep's processed PNG was one step behind the raw TIFF
+        beside it, and the radiometer sample attached to the record described
+        the PNG. Watch the driver's reported ExposureTime instead.
+
+        Returns the number of frames discarded.
+        """
+        for n in range(max_frames):
+            self.capture()
+            meta = getattr(self, "last_frame_metadata", None) or {}
+            actual = meta.get("ExposureTime")
+            if actual is None:
+                # Backend reports no exposure metadata (debug/none cameras);
+                # nothing to settle against, so don't burn frames on it.
+                return n + 1
+            if abs(float(actual) - requested_us) <= tolerance * requested_us:
+                return n + 1
+        logger.warning(
+            "Exposure did not settle at %sµs after %d frames; "
+            "the frame may not match its label",
+            requested_us,
+            max_frames,
+        )
+        return max_frames
 
     def _blank_capture(self):
         """
@@ -246,6 +287,22 @@ class CameraInterface:
     def get_cam_type(self) -> str:
         return "foo"
 
+    def optical_train_known(self) -> bool:
+        """Whether these frames came through this device's own optics.
+
+        True for anything pointed at the sky, which is why it defaults that
+        way: a camera has to opt *out*, so a new hardware backend inherits the
+        FOV gate rather than silently losing it.
+
+        False is an **unknown optical train** (docs/ax/camera/CONTEXT.md): the
+        frames were captured through some other train, so the resolved one
+        describes this machine and not them. Two things follow, both handled
+        by the consumers rather than here -- the solver asserts no FOV gate,
+        and lens self-heal declines to infer a lens from a fitted FOV that
+        measured a recording. See docs/adr/0029.
+        """
+        return True
+
     def start_camera(self) -> None:
         pass
 
@@ -266,6 +323,18 @@ class CameraInterface:
                 camera_type = camera_type_str.split(" ")[1].lower()
                 shared_state.set_camera_type(camera_type)
                 logger.info(f"Camera type set to: {camera_type}")
+
+            # Published beside the sensor because it qualifies it: the sensor
+            # a playback camera declares is the one its *frames* were shot on,
+            # which is not the same claim a live camera makes.
+            train_known = self.optical_train_known()
+            shared_state.set_optical_train_known(train_known)
+            if not train_known:
+                logger.info(
+                    "Optical train is unknown: these frames did not come "
+                    "through this device's optics, so the solver gets no FOV "
+                    "gate and the lens cannot self-heal from them"
+                )
 
             # Check if auto-exposure was previously enabled in config
             config_exp = cfg.get_option("camera_exp")
@@ -738,11 +807,8 @@ class CameraInterface:
                                 # Flush camera buffer - discard pre-buffered frames with old exposure
                                 # Picamera2 maintains a frame queue, need to flush frames captured
                                 # before the new exposure setting was applied
-                                logger.debug(
-                                    f"Flushing camera buffer for {exp_us}µs exposure"
-                                )
-                                _ = self.capture()  # Discard buffered frame 1
-                                _ = self.capture()  # Discard buffered frame 2
+                                logger.debug(f"Settling camera at {exp_us}µs exposure")
+                                settled = self._settle_exposure(exp_us)
 
                                 # Now capture both processed and RAW images with correct exposure
                                 exp_ms = exp_us / 1000
@@ -757,9 +823,16 @@ class CameraInterface:
                                 )  # Returns 8-bit PIL Image
                                 processed_img.save(str(processed_filename))
 
-                                # Save RAW TIFF (16-bit, from camera.capture_raw_file())
+                                # Save RAW TIFF (16-bit, from
+                                # camera.capture_raw_file()), always the full
+                                # sensor. The "rawfull" name keeps these out of
+                                # readers globbing the cropped era's
+                                # "*_raw_RGGB.tiff", so an un-updated tool finds
+                                # nothing rather than silently scaling centroids
+                                # against the wrong frame size.
                                 raw_filename = (
-                                    sweep_dir / f"img_{i:03d}_{exp_ms:.2f}ms_raw.tiff"
+                                    sweep_dir
+                                    / f"img_{i:03d}_{exp_ms:.2f}ms_rawfull.tiff"
                                 )
                                 self.capture_raw_file(str(raw_filename))
 
@@ -772,8 +845,8 @@ class CameraInterface:
                                 frame_record = sweep_frame_record(
                                     i,
                                     exp_us,
-                                    getattr(self, "last_raw_frame_metadata", None),
-                                    getattr(self, "last_raw_frame", None),
+                                    getattr(self, "last_frame_driver_metadata", None),
+                                    getattr(self, "last_cropped_frame", None),
                                     getattr(
                                         getattr(self, "profile", None),
                                         "bit_depth",
@@ -789,12 +862,21 @@ class CameraInterface:
                                 # sample below does NOT: it is recomputed on
                                 # every capture and gives live per-frame
                                 # background/MAD/gradient through the sweep.
+                                frame_record["settle_frames"] = settled
                                 try:
                                     frame_record["sqm_details"] = _json_safe(
                                         shared_state.sqm_details()
                                     )
+                                    # The freeze is expected, but only the
+                                    # source said so -- an analyst reading the
+                                    # archive saw one value repeated across
+                                    # every frame with nothing marking it as a
+                                    # single pre-sweep snapshot. Say so in the
+                                    # data.
+                                    frame_record["sqm_details_frozen"] = True
                                 except Exception:
                                     frame_record["sqm_details"] = None
+                                    frame_record["sqm_details_frozen"] = None
                                 try:
                                     frame_record["radiometer_sample"] = _json_safe(
                                         shared_state.sqm_radiometer_sample()
@@ -886,6 +968,7 @@ class CameraInterface:
                                     altitude_deg=altitude_deg,
                                     azimuth_deg=azimuth_deg,
                                     camera_type=shared_state.camera_type(),
+                                    lens_key=shared_state.camera_lens(),
                                     notes=f"Exposure sweep: {num_images} images, {min_exp / 1000:.1f}-{max_exp / 1000:.1f}ms",
                                 )
                                 logger.info(

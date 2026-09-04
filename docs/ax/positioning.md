@@ -108,7 +108,12 @@ The solver process owns one tight loop:
    `tetra3.get_centroids_from_image`.
 5. **Solve with tetra3.** `t3.solve_from_centroids(...)` is called with:
    - the image dims `(512, 512)`,
-   - `fov_estimate=12.0`, `fov_max_error=4.0`,
+   - the **FOV gate** — `fov_estimate` / `fov_max_error` from
+     `OpticalTrain.solver_fov_params()`, i.e. the derived field of view and
+     ±15% of it. The train is resolved per frame (memoized on
+     `(camera_type, camera_lens)`) so a lens change from the menu takes
+     effect on the next frame rather than the next boot. See
+     [ADR 0027](../adr/0027-fov-gate-derived-from-optical-train.md).
    - `target_pixel=shared_state.target_pixel()` so tetra3 also reports the
      RA/Dec at the user's chosen pixel (as `RA_target`/`Dec_target`),
    - optional `target_sky_coord` when alignment is active.
@@ -245,7 +250,7 @@ must be derived together. Derive or verify entries with the visual **imu2cam
 tool** (`PiFinder/pointing_model/docs/imu2cam_tool.html`);
 `tests/test_imu2cam_tool_presets.py` pins the tool's presets to both
 production tables. The IMU chip placement on the UI board is per **board
-revision** (rev-4 boards mount it on the back side, flipped about the
+revision** (rev4 boards mount it on the back side, flipped about the
 board's long axis), so set the tool's board-revision control to match the
 physical board — see the tool's header comment and the CONTEXT.md **Board
 revision** entry.

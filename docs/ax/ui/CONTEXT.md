@@ -81,18 +81,22 @@ The flow where `MenuManager.key_*` forwards a keypad event to `stack[-1].key_*`,
 _Avoid_: event routing, input handling.
 
 **Keypad layout**:
-The physical pad is **TKL / calculator style — `7 8 9` is the TOP row**, not phone style. The full grid (from `keyboard_pi.py`'s `keymap`) is:
+The physical pad is **TKL / calculator style — `7 8 9` is the TOP row**, not phone style. `keyboard_pi.py`'s `keymap` covers a 5×5 matrix that spans both hardware revisions; each revision populates a different subset, and the directional cluster is what moved:
 
 ```
-7  8  9   (na)
-4  5  6   PLUS
-1  2  3   MINUS
-   0      SQUARE
-LEFT UP DOWN RIGHT
+       col0  col1  col2  col3    col4
+row0    7     8     9    (na)    UP     ┐
+row1    4     5     6    PLUS    LEFT   │ rev4 adds col4: a
+row2    1     2     3    MINUS   DOWN   │ directional cluster
+row3   (na)   0    (na)  SQUARE  RIGHT  │ with a centre SQUARE
+row4    LEFT  UP    DOWN  RIGHT  SQUARE ┘
+        └─ rev3 directional row ─┘
 ```
 
-So when a module maps number keys to on-screen **2×2 screen quadrants**, the spatially-faithful corners are `7`=top-left, `9`=top-right, `1`=bottom-left, `3`=bottom-right (used by daytime alignment's quadrant picker). `SQUARE`+key sends the `ALT_*` variant; a long press sends the `LNG_*` variant (long-`SQUARE` opens the marking menu).
-_Avoid_: assuming phone-style `1 2 3` on top — it is inverted.
+**rev3** populates cols 0–3 of every row (the calculator pad plus the bottom directional row). **rev4** populates rows 0–3 of cols 0–3 plus *all* of col 4 — the directional cluster moved off the bottom row and gained a second `SQUARE`. Both clusters send the same logical keys, so **UI code never needs to know which revision it is on** — but it also means a logical key does not identify a physical switch. (Which positions carry a switch on a given board is the [Bring-up](../bringup/CONTEXT.md) context's *population map*; only bring-up cares.)
+
+So when a module maps number keys to on-screen **2×2 screen quadrants**, the spatially-faithful corners are `7`=top-left, `9`=top-right, `1`=bottom-left, `3`=bottom-right (used by daytime alignment's quadrant picker). `SQUARE`+key sends the `ALT_*` variant; a long press sends the `LNG_*` variant (long-`SQUARE` opens the marking menu). Note there are two `SQUARE` positions in the matrix (one per cluster) and the chord works from either.
+_Avoid_: assuming phone-style `1 2 3` on top — it is inverted; assuming the pad is 4 columns (it grew to 5 in rev4).
 
 **Power key** (`POWER_BTN` / `key_power`):
 The dedicated hardware power button, dispatched as a normal keypad event in **key dispatch**. Its meaning is "open the shutdown confirmation": from any active module it jumps (`jump_to_label`) to the `shutdown` menu item. On that confirmation screen it doubles as **select** (behaves like the right key), so one press raises the confirmation and a second press confirms.
@@ -165,12 +169,22 @@ The small mutable object (`state.py`) holding UI-process state — observing lis
 _Avoid_: ui config, session state.
 
 **Target** (`ui_state.target()`):
-The most-recently **selected object**, mirrored into `UIState` by `UIObjectDetails` (`update_object_info`) so cross-screen consumers can mark it — the **chart** draws it as a full-brightness cross (+ off-screen pointer, and its designator label when on-screen), and telemetry records it. Distinct from the Catalog *selected object* (the live `UIObjectDetails` cursor, see [Catalog](../catalog/CONTEXT.md)): the target is the **persisted last selection**, surviving after you leave details. Not a push-to concept — it follows selection automatically.
+The most-recently **selected object**, mirrored into `UIState` by `UIObjectDetails` (`update_object_info`) so cross-screen consumers can mark it — the **chart** draws it as a full-brightness cross (+ off-screen pointer, and its designator label when on-screen), and telemetry records it. Distinct from the Catalog *selected object* (the live `UIObjectDetails` cursor, see [Catalog](../catalog/CONTEXT.md)): the target is the **persisted last selection**, surviving after you leave details. Not a push-to concept — it follows selection automatically. Also distinct from the chart's **center object**, which is geometric rather than remembered — though opening the center object's details makes it the target, like any other selection.
 _Avoid_: push-to target, goto target.
 
 **Published UI state** (`serialize_current_ui_state`):
 The dict `MenuManager` writes to `shared_state.set_current_ui_state(...)` each redraw — `ui_type`, `title`, marking-menu options, and the active module's own `serialize_ui_state()`. This is what `/api/current-selection` reflects.
 _Avoid_: api state, ui snapshot.
+
+### Chart
+
+**Center object**:
+The plotted chart marker nearest the center of the chart. The candidate set is exactly what the chart drew on the current solve — the **target** cross, the observing list, and the nearby catalog DSOs that survived the zoom magnitude limit and the marker cap — further restricted to markers inside the screen bounds. So the center object is always something the user can see: with DSO Display off, the target cross is the only candidate, and when nothing qualifies there is no center object. It is held **sticky** between solves — a rival marker must be closer by a clear margin to take over — so it doesn't alternate between two near-equidistant markers as the pointing drifts. Ranked by distance in screen pixels, not great-circle degrees; at wide FOV the projection makes those differ, and "nearest the center of the chart" is the pixel one.
+_Avoid_: nearest object (the Catalog context's **Nearby** ranking is unbounded and ignores what's drawn — a different set), centre object (house spelling is `center`, matching `centerX`/`centerY`), selected object, target.
+
+**Center-object readout** (`chart_center_object`):
+The optional line along the bottom of the chart naming the **center object**: its **designator** plus its first common name, marquee-scrolled at the user's `text_scroll_speed` when it doesn't fit, with a right-arrow glyph advertising that RIGHT opens that object's details. Repainted every frame from a cached copy of the chart backdrop, so the scroll runs at UI frame rate rather than stuttering at the solve rate. Stacks from the bottom: the RA/Dec readout keeps the bottom line when it is on and the center-object readout sits above it; with RA/Dec off it takes the bottom line itself. The readout is the affordance for the RIGHT key — with it off, RIGHT on the chart does nothing.
+_Avoid_: chart label (**Label** is a menu item's identifier), object label, caption, status bar (that is the Focus screen's).
 
 ### Focus indicator
 
@@ -196,6 +210,10 @@ _Avoid_: processed preview, enhanced stars, focus strip.
 One of the four Focus-screen views cycled with short `square`, following the normal **display mode** convention: **Stars** (the four focus tiles and HFD history), **Single** (the brightest tracked star at twice the Stars magnification, with HFD and history on a translucent lower-third overlay), **Image** (the complete frame with the original per-frame autocontrast applied for display only), and **Stats** (HFD, supplementary area-equivalent FWHM, detected-star count, exposure mode/value, gain, and a log-scaled raw histogram). HFD, centroids, and the Stats histogram always use the unstretched raw frame. Every unavailable HFD readout is shown as `?.?`; no upper-limit sentinel is displayed.
 _Avoid_: tab, page, focus-strip mode.
 
+**Focus status bar**:
+The standing bar along the bottom of the Focus screen in the **Stars**, **Single** and **Image** display modes: the held exposure on the left, the keys that change it on the right. Zoom keys are advertised only where `+`/`-` do something, so **Image** lists the exposure keys alone. Its rows are *reserved* out of the camera area rather than drawn over it — the tiles and crops are raw sensor pixels, and none of them is hidden behind the bar. **Stats** has no bar: it already reports exposure mode and value, and its histogram owns the bottom of the panel. It replaced a transient top-left exposure readout when the Focus marking menu lost its jump to Camera Exp, so it is also the only advertisement of the UP / DOWN exposure keys.
+_Avoid_: exposure flash, title bar (that is the shared `titlebar`), legend.
+
 **Focus FWHM estimate**:
 The median area-equivalent diameter of the pixels above half local maximum for the same four brightest measurable stars. It is supplementary diagnostics on the Stats display mode, not the focus-quality metric; HFD remains primary because it behaves better on saturated, broad, and donut-shaped stars.
 _Avoid_: focus FWHM (when used as a replacement for HFD), fitted FWHM (there is no Gaussian fit).
@@ -219,6 +237,7 @@ _Avoid_: optical zoom, solver zoom.
 - **"Selected"** in this context refers to the highlighted item in a `UITextMenu` cursor or a checked multi-select value. The Catalog context's "selected object" / "enabled catalog" distinctions are separate — see [Catalog](../catalog/CONTEXT.md).
 - **"Label" vs "name"** — `label` is the stable internal identifier (for `jump_to_label`); `name` is the user-visible, translated display string. They are different keys on the same menu item.
 - **"Preload" vs "stateful"** — preload is *when* (eagerly at boot); stateful is *whether reused* (cached on the item). Preload implies stateful, but a module can be stateful without being preloaded.
+- **"Center object" vs "target"** — both are single objects the chart singles out, and they are frequently the same one, but they answer different questions. The **target** is *what I last looked at* (remembered, survives navigation, drawn as the cross). The **center object** is *what I am pointed at right now* (recomputed each solve from the drawn markers, named by the readout). The target is also a candidate to *be* the center object.
 
 ## Example dialogue
 

@@ -11,6 +11,7 @@ from PiFinder.sqm.camera_profiles import (
     detect_camera_type,
 )
 from PiFinder.sqm.save_sweep_metadata import save_sweep_metadata
+from PiFinder.optics import build_optical_train
 from PiFinder.sqm.wings import WingEstimator
 
 
@@ -1214,6 +1215,66 @@ class TestCropAndRotate:
 
 
 @pytest.mark.unit
+class TestArchivedFrameExtent:
+    """Sweeps archive the full sensor; photometry works on the crop.
+
+    Both eras of sweep exist on disk, so a reader has to tell them apart and
+    reduce the full-sensor era to the crop before measuring. These tests pin
+    that reduction to be exactly what the live pipeline produces -- the
+    guarantee that lets full-sensor sweeps reproduce every cropped-era number.
+    """
+
+    SENSORS = ["imx296", "imx462", "imx290", "hq"]
+
+    @pytest.mark.parametrize("name", SENSORS)
+    def test_full_sensor_frame_is_recognised(self, name):
+        profile = get_camera_profile(name)
+        full = np.zeros(profile.raw_size[::-1], dtype=np.uint16)
+
+        assert profile.is_full_sensor(full) is True
+
+    @pytest.mark.parametrize("name", SENSORS)
+    def test_cropped_frame_is_not_mistaken_for_full(self, name):
+        profile = get_camera_profile(name)
+        full = np.zeros(profile.raw_size[::-1], dtype=np.uint16)
+
+        assert profile.is_full_sensor(profile.crop_and_rotate(full)) is False
+
+    @pytest.mark.parametrize("name", SENSORS)
+    def test_cropping_a_full_sweep_frame_reproduces_the_live_crop(self, name):
+        """The reproducibility guarantee, asserted element for element."""
+        profile = get_camera_profile(name)
+        rng = np.random.default_rng(seed=1)
+        full = rng.integers(
+            0, 2**profile.bit_depth, size=profile.raw_size[::-1], dtype=np.uint16
+        )
+
+        np.testing.assert_array_equal(
+            profile.ensure_cropped(full), profile.crop_and_rotate(full)
+        )
+
+    @pytest.mark.parametrize("name", SENSORS)
+    def test_already_cropped_frames_pass_through_untouched(self, name):
+        """Cropped-era archives must not be cropped a second time."""
+        profile = get_camera_profile(name)
+        rng = np.random.default_rng(seed=2)
+        full = rng.integers(
+            0, 2**profile.bit_depth, size=profile.raw_size[::-1], dtype=np.uint16
+        )
+        cropped = profile.crop_and_rotate(full)
+
+        np.testing.assert_array_equal(profile.ensure_cropped(cropped), cropped)
+
+    @pytest.mark.parametrize("name", SENSORS)
+    def test_full_frame_holds_strictly_more_pixels(self, name):
+        """Nothing is lost by archiving the full sensor -- that is the point."""
+        profile = get_camera_profile(name)
+        full = np.zeros(profile.raw_size[::-1], dtype=np.uint16)
+
+        assert profile.crop_and_rotate(full).size < full.size
+
+
+@pytest.mark.unit
 class TestSaveSweepMetadata:
     """Unit tests for save_sweep_metadata.save_sweep_metadata()."""
 
@@ -1326,6 +1387,60 @@ class TestSaveSweepMetadata:
             data = json.load(f)
 
         assert data["timestamp"] == gps_time
+
+    def test_lens_key_is_recorded_and_moves_the_field_width(self, tmp_path):
+        """A stated lens has to reach the archive, field width and all.
+
+        The sweep archive is what the SQM calibration constants get re-derived
+        from, so recording the shipped lens for a device that is not on it
+        makes the mislabelling self-reinforcing: the refit divides by a field
+        width the frames were never taken through.
+        """
+        sweep_dir = tmp_path / "sweep_lens"
+        sweep_dir.mkdir()
+
+        save_sweep_metadata(
+            sweep_dir=sweep_dir,
+            observer_lat=50.85,
+            observer_lon=4.35,
+            camera_type="imx296",
+            lens_key="12mm",
+        )
+
+        with open(sweep_dir / "sweep_metadata.json") as f:
+            data = json.load(f)
+
+        assert data["camera"]["lens"] == "12mm"
+        assert data["camera"]["lens_effective_focal_length_mm"] == pytest.approx(13.04)
+        # 12mm on an imx296 images ~16.4 degrees, not the shipped 16mm's 13.71.
+        assert data["camera"]["radiometric_fov_degrees"] == pytest.approx(
+            build_optical_train("imx296", "12mm").fov_degrees
+        )
+        assert data["camera"]["radiometric_fov_degrees"] > 15.0
+
+    def test_omitted_lens_key_records_the_shipped_lens(self, tmp_path):
+        """The fallback, so the assertion above is about the lens, not the call.
+
+        Only correct for a caller that genuinely has no lens config to pass;
+        a caller holding shared_state must pass what it holds.
+        """
+        sweep_dir = tmp_path / "sweep_no_lens"
+        sweep_dir.mkdir()
+
+        save_sweep_metadata(
+            sweep_dir=sweep_dir,
+            observer_lat=50.85,
+            observer_lon=4.35,
+            camera_type="imx296",
+        )
+
+        with open(sweep_dir / "sweep_metadata.json") as f:
+            data = json.load(f)
+
+        assert data["camera"]["lens"] == "16mm"
+        assert data["camera"]["radiometric_fov_degrees"] == pytest.approx(
+            13.71, abs=0.03
+        )
 
     def test_nonexistent_directory_raises_error(self, tmp_path):
         """Test that saving to nonexistent directory raises an error."""
@@ -1663,6 +1778,44 @@ class TestWingEstimator:
         assert not est.is_conditioned
         assert est.correction() == 0.0
 
+    def test_set_scale_rescales_geometry(self):
+        est = WingEstimator()
+        # imx296 full-res mono: photometry at 1088px vs the 512 solve image.
+        est.set_scale(1088 / 512)
+        assert est.aperture_radius == round(5 * 1088 / 512)
+        assert est.max_radius == round(20 * 1088 / 512)
+        assert est.plateau_radii == tuple(
+            round(q * 1088 / 512) for q in WingEstimator.BASE_PLATEAU_RADII
+        )
+        # Every plateau radius stays outside the aperture, inside the sky ring.
+        for q in est.plateau_radii:
+            assert est.aperture_radius < q <= est.max_radius - 4
+
+    def test_set_scale_clears_window(self):
+        image, centroids, _ = _wing_star_frame()
+        est = WingEstimator(min_samples=1)
+        est.add_frame(image, centroids, saturation_threshold=1e9)
+        assert est.is_conditioned
+        est.set_scale(2.125)
+        # Samples from another geometry are not comparable.
+        assert not est.is_conditioned
+
+    def test_set_scale_same_scale_is_noop(self):
+        image, centroids, _ = _wing_star_frame()
+        est = WingEstimator(min_samples=1)
+        est.set_scale(1.0)
+        est.add_frame(image, centroids, saturation_threshold=1e9)
+        est.set_scale(1.0)
+        assert est.is_conditioned
+
+    def test_set_scale_near_unity_keeps_imx462_geometry(self):
+        # imx462 green: 490px. Rounding keeps aperture/plateau essentially
+        # unchanged, so the calibrated behavior is preserved.
+        est = WingEstimator()
+        est.set_scale(490 / 512)
+        assert est.aperture_radius == 5
+        assert est.plateau_radii[0] == 10
+
 
 @pytest.mark.unit
 class TestMzeroCorrection:
@@ -1756,5 +1909,5 @@ class TestBandOffset:
     def test_band_offset_values(self):
         assert get_camera_profile("imx462").sqm_band_offset == pytest.approx(0.53)
         assert get_camera_profile("imx290").sqm_band_offset == pytest.approx(0.53)
-        assert get_camera_profile("hq").sqm_band_offset == pytest.approx(0.60)
-        assert get_camera_profile("imx296").sqm_band_offset == pytest.approx(-0.22)
+        assert get_camera_profile("hq").sqm_band_offset == pytest.approx(0.99)
+        assert get_camera_profile("imx296").sqm_band_offset == pytest.approx(-0.02)

@@ -1,10 +1,36 @@
 import json
+import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
 from sqlite3 import Connection, Cursor
-from PiFinder.db.db import Database
-import PiFinder.utils as utils
+from threading import RLock
+from typing import Dict, Iterable, List, Optional, Tuple
+
 from PiFinder.composite_object import CompositeObject
+from PiFinder.db.db import Database
+from PiFinder.db.objects_db import ObjectsDatabase
+import PiFinder.utils as utils
+
+logger = logging.getLogger("Observations_DB")
+
+
+@dataclass
+class _ObservedIdentityCache:
+    fingerprint: tuple[tuple[int, int], tuple[int, int]]
+    listings: set[tuple[str, int]]
+    object_ids: set[int]
+
+
+_observed_identity_caches: dict[tuple[Path, Path], _ObservedIdentityCache] = {}
+_observed_identity_cache_lock = RLock()
+
+
+def _database_fingerprint(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0, 0
+    return stat.st_mtime_ns, stat.st_size
 
 
 class ObservationsDatabase(Database):
@@ -14,6 +40,7 @@ class ObservationsDatabase(Database):
         # patches it, sending writes to the real ~/PiFinder_data.
         if db_path is None:
             db_path = utils.observations_db
+        self._objects_db = None
         new_db = False
         if not db_path.exists():
             new_db = True
@@ -23,6 +50,109 @@ class ObservationsDatabase(Database):
             self.create_tables()
 
         self.load_observed_objects_cache()
+
+    def _get_objects_db(self):
+        """
+        The catalog objects DB — a separate sqlite file from this one.
+        Observed status is a property of the underlying sky object, so
+        listing keys (catalog, sequence) are mapped to object ids through
+        it. Opened lazily and kept for the life of this instance.
+        """
+        if self._objects_db is None:
+            self._objects_db = ObjectsDatabase()
+        return self._objects_db
+
+    def _identity_cache_key(self) -> tuple[Path, Path]:
+        return self.db_path.resolve(), Path(utils.pifinder_db).resolve()
+
+    def _identity_cache_fingerprint(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        observations_path, objects_path = self._identity_cache_key()
+        return (
+            _database_fingerprint(observations_path),
+            _database_fingerprint(objects_path),
+        )
+
+    def _query_observed_identities(
+        self,
+    ) -> tuple[set[tuple[str, int]], set[int]]:
+        """Load listing and sky-object identities with one indexed query."""
+        alias = "catalog_identity"
+        self.cursor.execute(
+            f"ATTACH DATABASE ? AS {alias}", (str(Path(utils.pifinder_db)),)
+        )
+        try:
+            rows = self.cursor.execute(
+                f"""
+                SELECT DISTINCT observed.catalog, observed.sequence,
+                                catalog_object.object_id
+                FROM obs_objects AS observed
+                LEFT JOIN {alias}.catalog_objects AS catalog_object
+                  ON catalog_object.catalog_code = observed.catalog
+                 AND catalog_object.sequence = observed.sequence
+                """
+            ).fetchall()
+        finally:
+            self.cursor.execute(f"DETACH DATABASE {alias}")
+
+        listings = {(row["catalog"], row["sequence"]) for row in rows}
+        object_ids = {
+            row["object_id"]
+            for row in rows
+            if row["object_id"] is not None and row["object_id"] >= 0
+        }
+        return listings, object_ids
+
+    def _resolve_object_id(self, catalog: str, sequence: int) -> Optional[int]:
+        """
+        Maps a listing to its objects-table id; None when the listing
+        doesn't resolve (virtual objects like planets, or log entries from
+        catalogs no longer installed).
+        """
+        try:
+            row = self._get_objects_db().get_catalog_object_by_sequence(
+                catalog, sequence
+            )
+        except Exception:
+            logger.warning(
+                "Objects DB unavailable; observed status stays per listing",
+                exc_info=True,
+            )
+            return None
+        return None if row is None else row["object_id"]
+
+    def _resolve_object_ids(
+        self, listings: Iterable[Tuple[str, int]]
+    ) -> Dict[Tuple[str, int], Optional[int]]:
+        """
+        Maps many listings to their objects-table ids in one query.
+
+        Unresolved listings (virtual objects, removed catalogs) are absent
+        from the result; a listing carrying a NULL object_id maps to None,
+        so callers must screen for it as _resolve_object_id's do.
+        """
+        try:
+            return self._get_objects_db().get_object_ids_by_listings(list(listings))
+        except Exception:
+            logger.warning(
+                "Objects DB unavailable; observed status stays per listing",
+                exc_info=True,
+            )
+            return {}
+
+    def _resolve_listings(self, object_id: int) -> List[Tuple[str, int]]:
+        """
+        Maps an objects-table id to all of its catalog listings (the
+        sibling designations of one sky object, e.g. M 31 / NGC 224).
+        """
+        try:
+            rows = self._get_objects_db().get_catalog_objects_by_object_id(object_id)
+        except Exception:
+            logger.warning(
+                "Objects DB unavailable; log entries stay per listing",
+                exc_info=True,
+            )
+            return []
+        return [(row["catalog_code"], row["sequence"]) for row in rows]
 
     def create_tables(self, force_delete: bool = False):
         """
@@ -126,8 +256,17 @@ class ObservationsDatabase(Database):
         )
         self.conn.commit()
 
-        # Update cache so filters reflect the new observation immediately
-        self.observed_objects_cache.add((catalog, sequence))
+        # Update the process-wide cache so every existing view reflects the
+        # new observation immediately.
+        with _observed_identity_cache_lock:
+            self.observed_objects_cache.add((catalog, sequence))
+            object_id = self._resolve_object_id(catalog, sequence)
+            if object_id is not None and object_id >= 0:
+                self.observed_object_ids.add(object_id)
+
+            cache = _observed_identity_caches.get(self._identity_cache_key())
+            if cache is not None:
+                cache.fingerprint = self._identity_cache_fingerprint()
 
         observation_id = self.cursor.execute(
             "select last_insert_rowid() as id"
@@ -148,15 +287,58 @@ class ObservationsDatabase(Database):
 
     def load_observed_objects_cache(self) -> None:
         """
-        (re)Loads the logged object cache
+        (re)Loads the logged object cache.
+
+        Log entries are stored per listing (catalog, sequence), but
+        observed status is a property of the underlying sky object, so
+        each logged listing is also mapped to its object id — logging
+        M 31 marks NGC 224 observed too, retroactively for existing log
+        entries. Listings that don't resolve to an object id (virtual
+        objects, removed catalogs) stay listing-keyed only.
         """
-        self.observed_objects_cache: set[tuple[str, int]] = {
-            (x["catalog"], x["sequence"]) for x in self.get_observed_objects()
-        }
+        with _observed_identity_cache_lock:
+            key = self._identity_cache_key()
+            fingerprint = self._identity_cache_fingerprint()
+            cache = _observed_identity_caches.get(key)
+            if cache is None or cache.fingerprint != fingerprint:
+                try:
+                    listings, object_ids = self._query_observed_identities()
+                except Exception:
+                    logger.warning(
+                        "Could not resolve observed object identities; "
+                        "observed status stays per listing",
+                        exc_info=True,
+                    )
+                    listings = {
+                        (row["catalog"], row["sequence"])
+                        for row in self.get_observed_objects()
+                    }
+                    object_ids = set()
+
+                if cache is None:
+                    cache = _ObservedIdentityCache(fingerprint, listings, object_ids)
+                    _observed_identity_caches[key] = cache
+                else:
+                    # Existing database instances retain these set objects, so
+                    # refresh them in place rather than stranding stale readers.
+                    cache.listings.clear()
+                    cache.listings.update(listings)
+                    cache.object_ids.clear()
+                    cache.object_ids.update(object_ids)
+                    cache.fingerprint = fingerprint
+
+            self.observed_objects_cache = cache.listings
+            self.observed_object_ids = cache.object_ids
 
     def check_logged(self, obj_record: CompositeObject):
         """
-        Returns true/false if this object has been observed
+        Returns true/false if this object has been observed.
+
+        A DB-backed object (object_id >= 0) tests as logged when any of
+        its listings has a log entry. Virtual objects key on their own
+        (catalog, sequence) listing only: their negative object_ids are
+        minted per session, so id-keyed status would cross-mark
+        unrelated objects or vanish on restart.
         """
         # safety check
         if self.observed_objects_cache is None:
@@ -168,19 +350,32 @@ class ObservationsDatabase(Database):
         ) in self.observed_objects_cache:
             return True
 
-        return False
+        object_id = obj_record.object_id
+        return (
+            object_id is not None
+            and object_id >= 0
+            and object_id in self.observed_object_ids
+        )
 
     def get_logs_for_object(self, obj_record: CompositeObject):
         """
-        Returns a list of observations for a particular object
+        Returns a list of log entries for the underlying sky object: for
+        a DB-backed object, entries recorded under any of its listings
+        (M 31's logs show on NGC 224's details too); virtual objects stay
+        per listing.
         """
+        listings: List[Tuple[str, int]] = []
+        object_id = obj_record.object_id
+        if object_id is not None and object_id >= 0:
+            listings = self._resolve_listings(object_id)
+        home = (obj_record.catalog_code, obj_record.sequence)
+        if home not in listings:
+            listings.append(home)
+
+        predicate = " or ".join(["(catalog = ? and sequence = ?)"] * len(listings))
+        params = [value for listing in listings for value in listing]
         logs = self.cursor.execute(
-            """
-                select * from obs_objects
-                where catalog = :catalog
-                and sequence = :sequence
-            """,
-            {"catalog": obj_record.catalog_code, "sequence": obj_record.sequence},
+            f"select * from obs_objects where {predicate}", params
         ).fetchall()
 
         return logs

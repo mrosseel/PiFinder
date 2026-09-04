@@ -872,6 +872,24 @@ pifinder_menu = {
                                 },
                             ],
                         },
+                        {
+                            # TRANSLATORS: chart setting — names the object
+                            # nearest the middle of the chart
+                            "name": _("Center Object"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "chart_center_object",
+                            "items": [
+                                {
+                                    "name": _("Off"),
+                                    "value": "Off",
+                                },
+                                {
+                                    "name": _("On"),
+                                    "value": "On",
+                                },
+                            ],
+                        },
                     ],
                 },
                 {
@@ -1033,16 +1051,16 @@ pifinder_menu = {
                                     "value": "as_heart",
                                 },
                                 {
-                                    "name": _("V4 Left"),
-                                    "value": "v4_left",
+                                    "name": _("Rev4 Left"),
+                                    "value": "rev4_left",
                                 },
                                 {
-                                    "name": _("V4 Right"),
-                                    "value": "v4_right",
+                                    "name": _("Rev4 Right"),
+                                    "value": "rev4_right",
                                 },
                                 {
-                                    "name": _("V4 Straight"),
-                                    "value": "v4_straight",
+                                    "name": _("Rev4 Straight"),
+                                    "value": "rev4_straight",
                                 },
                             ],
                         },
@@ -1066,6 +1084,33 @@ pifinder_menu = {
                                     "name": _("v3 - imx462"),
                                     "callback": callbacks.switch_cam_imx462,
                                     "value": "imx462",
+                                },
+                            ],
+                        },
+                        {
+                            # The lens cannot be detected, so this is the
+                            # user telling the device what is fitted. It is
+                            # marked on the barrel. Getting it wrong stops
+                            # solving entirely (docs/adr/0027).
+                            "name": _("Lens"),
+                            "class": UITextMenu,
+                            "select": "single",
+                            "config_option": "camera_lens",
+                            "label": "camera_lens",
+                            "value_callback": callbacks.get_camera_lens,
+                            "post_callback": callbacks.set_camera_lens,
+                            "items": [
+                                {
+                                    "name": _("12mm"),
+                                    "value": "12mm",
+                                },
+                                {
+                                    "name": _("16mm"),
+                                    "value": "16mm",
+                                },
+                                {
+                                    "name": _("25mm"),
+                                    "value": "25mm",
                                 },
                             ],
                         },
@@ -1249,35 +1294,40 @@ pifinder_menu = {
                                     "items": [
                                         {
                                             "name": _("Record"),
+                                            "callback": callbacks.telemetry_record_toggle,
+                                            "name_suffix_callback": callbacks.telemetry_record_suffix,
+                                        },
+                                        {
+                                            "name": _("Sections"),
                                             "class": UITextMenu,
-                                            "select": "single",
-                                            "config_option": "telemetry_record",
-                                            "post_callback": callbacks.telemetry_record_toggle,
+                                            "select": "multi",
+                                            "config_option": "telemetry_sections",
+                                            "post_callback": callbacks.telemetry_section_toggle,
                                             "items": [
+                                                {"name": _("IMU"), "value": "imu"},
+                                                {"name": _("SQM"), "value": "sqm"},
+                                                {"name": _("Solves"), "value": "solve"},
                                                 {
-                                                    "name": _("Off"),
-                                                    "value": False,
+                                                    "name": _("Targets"),
+                                                    "value": "target",
                                                 },
                                                 {
-                                                    "name": _("On"),
-                                                    "value": True,
+                                                    "name": _("Images"),
+                                                    "value": "images",
                                                 },
                                             ],
                                         },
                                         {
-                                            "name": _("Images"),
+                                            "name": _("Max Size"),
                                             "class": UITextMenu,
                                             "select": "single",
-                                            "config_option": "telemetry_images",
+                                            "config_option": "telemetry_max_session_mb",
                                             "items": [
-                                                {
-                                                    "name": _("Off"),
-                                                    "value": False,
-                                                },
-                                                {
-                                                    "name": _("On"),
-                                                    "value": True,
-                                                },
+                                                {"name": _("250 MB"), "value": 250},
+                                                {"name": _("500 MB"), "value": 500},
+                                                {"name": _("1 GB"), "value": 1024},
+                                                {"name": _("2 GB"), "value": 2048},
+                                                {"name": _("Unlimited"), "value": 0},
                                             ],
                                         },
                                         {

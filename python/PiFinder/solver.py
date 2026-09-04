@@ -26,11 +26,13 @@ import grpc
 from PiFinder import state_utils
 from PiFinder import utils
 from PiFinder import timez
+from PiFinder.optics import OpticalTrainResolver
 from PiFinder.sqm import SQM as SQMCalculator
 
 from PiFinder.sqm.wings import WingEstimator
 from PiFinder.sqm.clouds import CloudEstimator
 from PiFinder.sqm.black_level import BlackLevelTracker
+from PiFinder.sqm.airglow import AirglowTracker, sample_diagnostics
 from PiFinder.sqm.radiometer import (
     RadiometerAccumulator,
     extract_photometry_image,
@@ -79,6 +81,24 @@ def _extract_raw_photometry_image(raw, profile):
     dtype problem so the caller can skip the SQM cycle.
     """
     return extract_photometry_image(raw, profile)
+
+
+def _scaled_photometry_radii(
+    scale, aperture_radius=5, inner_radius=10, outer_radius=18
+):
+    """Convert photometry radii from solve-image (512px) pixels to the
+    photometry image's own pitch.
+
+    The radii were tuned on the ~1.0-scale Bayer-green images (imx462: 490px).
+    On the full-res mono imx296 (scale 2.125) the unscaled r=5 aperture holds
+    only ~85% of a star's flux and the annuli land on the PSF itself, biasing
+    every local sky estimate. The floors keep the geometry ordered
+    (aperture < inner < outer) at any scale.
+    """
+    aperture = max(1, round(aperture_radius * scale))
+    inner = max(aperture + 1, round(inner_radius * scale))
+    outer = max(inner + 2, round(outer_radius * scale))
+    return aperture, inner, outer
 
 
 def _scale_solution_centroids(solution, scale):
@@ -131,6 +151,39 @@ def _derotate_centroids(points, rotation_deg, size):
     return np.stack([ry, rx], axis=1)
 
 
+def _fov_gate_bounds(train):
+    """``(low, high)`` degrees of a train's FOV gate, for logging."""
+    estimate, max_error = train.solver_fov_params()
+    return estimate - max_error, estimate + max_error
+
+
+def _warn_if_outside_solver_database(t3, train) -> None:
+    """Log when the pattern database cannot cover this train's field of view.
+
+    The database is built over a fixed field-of-view range. A train outside it
+    produces no solves at all -- not a degraded solve rate -- and the symptom
+    at the UI is indistinguishable from an exposure problem, so say it plainly
+    in the log once rather than leaving it to be inferred.
+    """
+    try:
+        props = t3.database_properties
+        db_min, db_max = float(props["min_fov"]), float(props["max_fov"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return
+    low, high = _fov_gate_bounds(train)
+    if high < db_min or low > db_max:
+        logger.error(
+            "FOV gate [%.2f, %.2f] deg lies outside the solver database's "
+            "[%.2f, %.2f] deg: no frame can solve. Check the configured lens "
+            "(%s) matches the one fitted.",
+            low,
+            high,
+            db_min,
+            db_max,
+            train.lens.menu_label,
+        )
+
+
 def update_radiometric_sqm(
     shared_state,
     sqm_calculator,
@@ -139,25 +192,68 @@ def update_radiometric_sqm(
     calculation_interval_seconds=1.0,
     now=None,
     black_level_tracker=None,
+    airglow_tracker=None,
+    field_width_degrees=None,
 ):
     """Collect every frame and publish a solve-independent value at cadence."""
     from datetime import datetime
 
-    fresh_sample = accumulator.add(sample)
     current_time = time.time() if now is None else float(now)
 
-    # Every fresh radiometer sample carries (exposure, background) — feed the
-    # black-level tracker here rather than only from the 10-second stellar
-    # diagnostics: this cadence conditions its fit in minutes and keeps working
-    # through failed solves. Withheld while the last transmission diagnostic
-    # said cloud (a moving sky breaks the intercept's single-line model; the
-    # tracker's own stderr gate catches drift the flag misses).
+    noise = sqm_calculator.noise_floor_estimator
+
+    def tracked_or_static_bias():
+        # The in-session intercept supersedes any static bias, wizard-measured
+        # or profile: the OB clamp level moves with sensor state, so a stored
+        # constant goes stale while the tracker measures the running session's
+        # own frames — bounded by its stderr, deviation-band, and lease gates.
+        # The wander is negligible over a city background but worth
+        # 0.2–0.4 mag (and dead short-exposure frames) at a dark site.
+        if black_level_tracker is not None:
+            tracked = black_level_tracker.pedestal()
+            if tracked is not None:
+                return tracked
+        return sqm_calculator.profile.bias_offset
+
+    def pedestal_for_exposure(exposure_sec):
+        bias = tracked_or_static_bias()
+        if not noise.dark_current_calibrated:
+            return bias
+        # Dark current stays the wizard's: the intercept fit cannot separate
+        # dark from sky (both are linear in exposure).
+        return bias + sqm_calculator.profile.dark_current_rate * exposure_sec
+
+    if sample is not None:
+        sample = dict(sample)
+    if airglow_tracker is not None and sample is not None:
+        optical_black = sample.get("optical_black_pedestal")
+        if optical_black is not None and np.isfinite(optical_black):
+            colour_pedestal = float(optical_black)
+            colour_pedestal_source = "optical_black"
+        else:
+            colour_pedestal = pedestal_for_exposure(float(sample["exposure_sec"]))
+            colour_pedestal_source = "tracked_or_calibrated"
+        diagnostic = sample_diagnostics(
+            sample, airglow_tracker.camera_type, colour_pedestal
+        )
+        diagnostic["pedestal_source"] = colour_pedestal_source
+        sample["airglow_diagnostic"] = diagnostic
+        if diagnostic["valid"]:
+            sample["paired_pedestal"] = colour_pedestal
+            sample["spectral_floor"] = diagnostic["correction_adu_per_sec"]
+            sample["paired_radiometric_zero_point"] = diagnostic["paired_zero_point"]
+
+    fresh_sample = accumulator.add(sample)
     if black_level_tracker is not None and fresh_sample:
         cloudy_now = shared_state.sqm_details().get("cloud_flag") is True
         black_level_tracker.add_sample(
             float(sample["exposure_sec"]),
             float(sample["background_per_pixel"]),
             stable=not cloudy_now,
+        )
+    if airglow_tracker is not None and fresh_sample:
+        airglow_tracker.add_sample(
+            sample, float(sample["airglow_diagnostic"]["pedestal"])
         )
 
     current_sqm = shared_state.sqm()
@@ -169,31 +265,19 @@ def update_radiometric_sqm(
         except (ValueError, AttributeError):
             logger.warning("Failed to parse SQM timestamp, recalculating")
 
-    noise = sqm_calculator.noise_floor_estimator
-
-    def pedestal_for_exposure(exposure_sec):
-        if not noise.dark_current_calibrated:
-            # Zero-touch path: the tracked black level supersedes the static
-            # profile constant (the real pedestal wanders ±2 ADU night to
-            # night — negligible over a city background, 0.2–0.4 mag at a
-            # dark site). A wizard calibration remains authoritative.
-            if black_level_tracker is not None:
-                tracked = black_level_tracker.pedestal()
-                if tracked is not None:
-                    return tracked
-            return sqm_calculator.profile.bias_offset
-        return (
-            sqm_calculator.profile.bias_offset
-            + sqm_calculator.profile.dark_current_rate * exposure_sec
-        )
-
     sqm_value, details = accumulator.estimate(
         sqm_calculator.profile,
         current_time,
         pedestal_for_exposure=pedestal_for_exposure,
+        field_width_degrees=field_width_degrees,
     )
     if sqm_value is None:
         previous = shared_state.sqm_details()
+        details["window_radiometer"] = accumulator.dump()
+        if black_level_tracker is not None:
+            details["window_black_level"] = black_level_tracker.dump()
+        if airglow_tracker is not None:
+            details["window_airglow"] = airglow_tracker.dump()
         shared_state.set_sqm_details({**previous, **details})
         return False
 
@@ -213,12 +297,14 @@ def update_radiometric_sqm(
 
     if black_level_tracker is not None:
         tracked, tracked_stderr, _ = black_level_tracker.state()
-        details["black_level_tracked"] = (
-            tracked is not None and not noise.dark_current_calibrated
-        )
+        # pedestal() applies the lease; the flag must reflect what the
+        # publication actually used, not the raw last fit.
+        details["black_level_tracked"] = black_level_tracker.pedestal() is not None
         details["black_level_pedestal"] = tracked
         details["black_level_stderr"] = tracked_stderr
         details["window_black_level"] = black_level_tracker.dump()
+    if airglow_tracker is not None:
+        details["window_airglow"] = airglow_tracker.dump()
     details["window_radiometer"] = accumulator.dump()
     details["measurement_role"] = "primary_radiometer"
     shared_state.set_sqm_details({**previous, **details})
@@ -260,9 +346,10 @@ def update_sqm(
         exposure_sec: Exposure time in seconds
         altitude_deg: Altitude in degrees for extinction correction
         calculation_interval_seconds: Minimum time between calculations (default: 5.0)
-        aperture_radius: Aperture radius for photometry (default: 5)
-        annulus_inner_radius: Inner annulus radius (default: 10)
-        annulus_outer_radius: Outer annulus radius (default: 18)
+        aperture_radius: Aperture radius for photometry, in solve-image
+            (512px) pixels; rescaled to the photometry image (default: 5)
+        annulus_inner_radius: Inner annulus radius, solve-image pixels (default: 10)
+        annulus_outer_radius: Outer annulus radius, solve-image pixels (default: 18)
         wing_estimator: WingEstimator that supplies the rolling aperture
             (wing-loss) mzero correction and is fed each frame's photometry
             image + matched centroids.
@@ -312,6 +399,11 @@ def update_sqm(
         logger.debug("Raw frame unavailable/invalid for SQM; skipping this cycle")
         return False
     scale = green.shape[0] / 512.0
+    aperture_radius, annulus_inner_radius, annulus_outer_radius = (
+        _scaled_photometry_radii(
+            scale, aperture_radius, annulus_inner_radius, annulus_outer_radius
+        )
+    )
     calc_image = green
     calc_solution = _scale_solution_centroids(solution, scale)
     # All detected centroids, scaled to the photometry image: sqm masks them
@@ -342,18 +434,26 @@ def update_sqm(
 
     mzero_correction = 0.0
     if wing_estimator is not None:
+        # Match the estimator's patch geometry to this photometry image
+        # (no-op after the first frame; the scale is a per-camera constant).
+        wing_estimator.set_scale(scale)
         mzero_correction = wing_estimator.correction()
 
-    # Track the wandering sensor pedestal from the sky-vs-exposure intercept
-    # (see sqm.black_level). Only in the zero-touch path: when the user has run
-    # the calibration wizard, its measured bias + dark-current constants are
-    # authoritative and the tracker (which fits bias only) must not override.
+    # Pedestal from the sky-vs-exposure intercept (see sqm.black_level): the
+    # in-session tracked bias supersedes any static constant, wizard-measured
+    # or profile — the OB clamp level moves with sensor state, so a stored
+    # value goes stale. The wizard's dark-current rate remains authoritative
+    # (the intercept fit cannot separate dark from sky) and is added on top,
+    # matching the calculator's own bias + dark composition.
     pedestal_override = None
-    if (
-        black_level_tracker is not None
-        and not sqm_calculator.noise_floor_estimator.dark_current_calibrated
-    ):
-        pedestal_override = black_level_tracker.pedestal()
+    if black_level_tracker is not None:
+        tracked = black_level_tracker.pedestal()
+        if tracked is not None:
+            pedestal_override = tracked
+            if sqm_calculator.noise_floor_estimator.dark_current_calibrated:
+                pedestal_override += (
+                    sqm_calculator.profile.dark_current_rate * exposure_sec
+                )
 
     try:
         # Calculate SQM from image
@@ -589,6 +689,28 @@ class PFCedarDetectClient(cedar_detect_client.CedarDetectClient):
             _CEDAR_DETECT_SHMEM_NAME,
         )
 
+    def _del_shmem(self):
+        """Release the shared-memory segment, tolerating one that has
+        already vanished from /dev/shm.
+
+        systemd-logind's ``RemoveIPC=yes`` (the default) deletes every
+        POSIX shared-memory segment a user owns the moment that user's
+        last login session ends — an SSH logout is enough, because the
+        PiFinder service runs as the same user but holds no login
+        session of its own. The upstream cleanup then raises
+        ``FileNotFoundError`` from ``unlink()``, which escaped before
+        ``extract_centroids`` could flip ``_use_shmem`` off — so instead
+        of falling back to passing the image over gRPC, every subsequent
+        solve repeated the crash until restart (bench finding: "solves
+        die at the cable pull", which was really the SSH logout beside
+        it). A segment that is already gone is this method's goal state:
+        treat it as released.
+        """
+        try:
+            super()._del_shmem()
+        except FileNotFoundError:
+            self._shmem = None
+
     def _get_stub(self):
         if self._stub is None:
             channel = grpc.insecure_channel("127.0.0.1:%d" % self._port)
@@ -598,8 +720,7 @@ class PFCedarDetectClient(cedar_detect_client.CedarDetectClient):
         return self._stub
 
     def _alloc_shmem(self, size):
-        # Report a freshly created segment (not just a resized one) so the
-        # request sets reopen_shmem and the server drops its stale cached fd.
+        # A fresh segment also requires the server to reopen its cached fd.
         fresh = self._shmem is None
         resized = super()._alloc_shmem(size)
         return resized or fresh
@@ -641,11 +762,17 @@ class PFCedarDetectClient(cedar_detect_client.CedarDetectClient):
                 centroids_result = self._get_stub().ExtractCentroids(req)
             except grpc.RpcError as err:
                 if err.code() == grpc.StatusCode.INTERNAL:
-                    # Shared memory issue, fall back to non-shmem
+                    # Shared memory issue, fall back to non-shmem. The flag
+                    # latches for the life of the process, so this logs once --
+                    # but without it the downgrade is silent and the only
+                    # symptom is a slower extract time.
                     logger.warning(
-                        "Cedar shmem transfer failed (%s); "
-                        "falling back to inline image passing",
+                        "Cedar shared-memory handoff failed (%s); passing the "
+                        "image inline over gRPC from now on. If %s was removed "
+                        "out from under us, check for the RemoveIPC=no drop-in "
+                        "in /etc/systemd/logind.conf.d/.",
                         err.details(),
+                        _CEDAR_DETECT_SHMEM_NAME,
                     )
                     self._del_shmem()
                     self._use_shmem = False
@@ -664,6 +791,11 @@ class PFCedarDetectClient(cedar_detect_client.CedarDetectClient):
                 max_size=max_size,
                 return_binned=False,
                 use_binned_for_star_candidates=use_binned,
+                # Must be passed here too: detect_hot_pixels is a proto3 bool,
+                # so leaving it out sends false and hot pixels start being
+                # detected as stars. Losing the shared-memory handoff should
+                # cost throughput, not detection quality.
+                detect_hot_pixels=detect_hot_pixels,
             )
             try:
                 centroids_result = self._get_stub().ExtractCentroids(req)
@@ -772,8 +904,6 @@ def solver(
 ):
     MultiprocLogging.configurer(log_queue)
     logger.debug("Starting Solver")
-    # Load tetra3's bundled pattern database by name; tetra3 resolves it from
-    # its own package data dir (shipped inside the cedar-solve wheel).
     t3 = tetra3.Tetra3("default_database")
     align_ra = 0
     align_dec = 0
@@ -798,8 +928,17 @@ def solver(
     # camera type is not yet known here.
     sqm_cloud_estimator = None
     sqm_black_level = None
+    sqm_airglow = None
     sqm_radiometer = RadiometerAccumulator()
     last_stellar_diagnostic = 0.0
+
+    # The optical train is resolved per frame rather than here, for the same
+    # reason the SQM calculator is: at solver startup shared_state.camera_type()
+    # still holds the pre-camera default. Resolving it lazily also means a lens
+    # change takes effect on the next frame instead of the next boot. The
+    # resolver only rebuilds when one of the two halves actually changes.
+    optical_train = OpticalTrainResolver()
+    logged_train = None
 
     while True:
         logger.info("Starting Solver Loop")
@@ -842,6 +981,7 @@ def solver(
                         # here so stale seeds/history cannot carry over.
                         sqm_cloud_estimator = None
                         sqm_black_level = None
+                        sqm_airglow = None
                         sqm_radiometer.reset()
                         last_stellar_diagnostic = 0.0
                     else:
@@ -868,6 +1008,57 @@ def solver(
                 if not is_new_image:
                     continue
 
+                # Both halves are read live: the camera type becomes real once
+                # the camera process reports, and the lens can change from the
+                # menu mid-session.
+                try:
+                    train = optical_train.resolve(
+                        shared_state.camera_type(), shared_state.camera_lens()
+                    )
+                    # Read live for the same reason the train is: the camera
+                    # process publishes this after the solver is already
+                    # looping, so latching it here would miss it.
+                    train_known = shared_state.optical_train_known()
+                except (BrokenPipeError, ConnectionResetError) as e:
+                    logger.error(f"Lost connection to shared state manager: {e}")
+                    continue
+                if (train, train_known) != logged_train:
+                    logged_train = (train, train_known)
+                    if not train_known:
+                        # The resolved train is still worth printing -- it is
+                        # what SQM and the frustum are using -- but saying it
+                        # without saying it describes the device rather than
+                        # the frames is how somebody concludes the gate is
+                        # wrong when there is no gate.
+                        logger.info(
+                            "Optical train: %s %s lens on %s (%.2f deg), but "
+                            "these frames did not come through it -- solving "
+                            "with no FOV gate",
+                            "stated" if train.lens_stated else "assumed",
+                            train.lens.menu_label,
+                            shared_state.camera_type(),
+                            train.fov_degrees,
+                        )
+                    else:
+                        logger.info(
+                            # Say which of the two it is: under an assumed
+                            # lens the gate is wider than the stated field of
+                            # view implies, and a reader diagnosing "why did
+                            # it solve / not solve" needs to know the lens is
+                            # a fallback rather than something the device was
+                            # told.
+                            "Optical train: %s %s lens on %s, field of view "
+                            "%.2f deg, FOV gate [%.2f, %.2f]",
+                            "stated" if train.lens_stated else "assumed",
+                            train.lens.menu_label,
+                            shared_state.camera_type(),
+                            train.fov_degrees,
+                            *_fov_gate_bounds(train),
+                        )
+                        # Only meaningful against a gate we are actually
+                        # going to hand over.
+                        _warn_if_outside_solver_database(t3, train)
+
                 # Every camera frame already carries a tiny radiometer sample
                 # reduced in the camera process. Collect all of them and publish
                 # at most once per second for CPU/battery stability.
@@ -884,6 +1075,10 @@ def solver(
                         clear_sky_brightness=profile.clear_sky_brightness,
                     )
                     sqm_black_level = BlackLevelTracker(profile.bias_offset)
+                    camera_type = shared_state.camera_type()
+                    sqm_airglow = (
+                        AirglowTracker(camera_type) if camera_type == "imx462" else None
+                    )
                 if sqm_calculator is not None:
                     update_radiometric_sqm(
                         shared_state,
@@ -892,6 +1087,8 @@ def solver(
                         radiometer_sample,
                         calculation_interval_seconds=SQM_CALCULATION_INTERVAL_SECONDS,
                         black_level_tracker=sqm_black_level,
+                        airglow_tracker=sqm_airglow,
+                        field_width_degrees=train.fov_degrees,
                     )
 
                 try:
@@ -938,11 +1135,27 @@ def solver(
                         if align_ra != 0 and align_dec != 0:
                             _solver_args["target_sky_coord"] = [[align_ra, align_dec]]
 
+                        # The FOV gate is derived from the optical train, not
+                        # tuned: tetra3 prunes candidates by implied field of
+                        # view before verification and rejects survivors after
+                        # fitting, so this window has to describe the actual
+                        # hardware or nothing solves. See docs/adr/0027.
+                        #
+                        # Under an **unknown optical train** there is nothing
+                        # to derive it from -- the frames came through some
+                        # other optics -- so no gate is passed at all rather
+                        # than a wrong one. Omitting costs the upper bound
+                        # that rejects confident mis-solves, which is a trade
+                        # only defensible because nothing is being pointed at
+                        # the sky. See the third-rung amendment to 0029.
+                        if train_known:
+                            (
+                                _solver_args["fov_estimate"],
+                                _solver_args["fov_max_error"],
+                            ) = train.solver_fov_params()
                         solution = t3.solve_from_centroids(
                             centroids,
                             (512, 512),
-                            fov_estimate=12.0,
-                            fov_max_error=4.0,
                             match_max_error=0.005,
                             return_matches=True,  # Required for SQM calculation
                             target_pixel=shared_state.target_pixel(),
@@ -1042,9 +1255,24 @@ def solver(
                         solver_queue.put(solve_result)
                     else:
                         if solution:
+                            # Report the gate actually in force. This line
+                            # used to hardcode the pre-0027 constants
+                            # (12.0 +/- 4.0), which stopped being true when
+                            # the gate started coming from the optical train
+                            # -- so the one message a reader consults while
+                            # diagnosing "why is nothing solving" told them
+                            # about a window the solver had not used in two
+                            # releases. Saying stated vs assumed matters for
+                            # the same reason it does on the "Optical train:"
+                            # line above.
                             logger.warning(
-                                f"Solve FAILED - {len(centroids)} centroids detected but "
-                                f"pattern match failed (FOV est: 12.0°, max err: 4.0°)"
+                                "Solve FAILED - %d centroids detected but "
+                                "pattern match failed (%s %s lens, FOV gate "
+                                "[%.2f, %.2f] deg)",
+                                len(centroids),
+                                "stated" if train.lens_stated else "assumed",
+                                train.lens.menu_label,
+                                *_fov_gate_bounds(train),
                             )
                         solver_queue.put(
                             _build_failed_solve(

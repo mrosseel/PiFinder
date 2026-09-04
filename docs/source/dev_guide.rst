@@ -569,8 +569,8 @@ for testing purposes. Else specify which camera to use: pi, asi, debug or none.
 ...................................
 
 This uses fake hardware for the imu and gps. On its own this emulates
-rev-3 hardware, with no battery indicator; add ``--fakebattery`` to
-emulate rev-4.
+rev3 hardware, with no battery indicator; add ``--fakebattery`` to
+emulate rev4.
 
 .. code-block::
 
@@ -580,7 +580,7 @@ emulate rev-4.
 ..................
 
 With ``--fakehardware``, runs the fake battery monitor and enables the
-rev-4 battery indicator.
+rev4 battery indicator.
 
 .. code-block::
 
@@ -777,7 +777,7 @@ Finally, you can start straight into this mode from the command line — see the
 
 .. note::
 
-  If you are using the demo-mode and move the PiFinder and scope around, you will notice, that the picture alway starts at the same "standard demo picture". And it always switch back to the same picture, once you stopped. Do not expect to move through the sky, like you normally would do and get a solve to the newly reached location. You will always be brought back to the same position in the sky.
+  If you are using the demo-mode and move the PiFinder and telescope around, you will notice, that the picture alway starts at the same "standard demo picture". And it always switch back to the same picture, once you stopped. Do not expect to move through the sky, like you normally would do and get a solve to the newly reached location. You will always be brought back to the same position in the sky.
 
 
 .. image:: images/user_guide/DEMO_MODE_001_docs.png
