@@ -66,6 +66,29 @@ These are in-sample results under a light-pollution-dominated Ghent sky. The
 factory constants include the local sky spectrum, so independent units and dark
 airglow-dominated sites remain required validation.
 
+### First independent dark-site unit
+
+Eight IMX462 sweeps from a 21.32–21.55 mag site, referenced against three
+hand-held SQM-L meters that agreed to ±0.1, are archived as
+`support/dumps/sweeps/markcasazza/`. They are the first genuinely dark data in
+the archive; everything before them stops at 21.1. They are not factory-fit
+eligible and do not enter the table above.
+
+They exposed two frame properties the radiometer assumed rather than read, worth
+0.211 and 0.236 mag, both invisible on Ghent hardware by construction. See
+[ADR 0030](../adr/0030-radiometer-reads-frame-properties.md). With both read,
+the unit's mean absolute error over the eight sweeps falls from 0.506 to 0.117
+mag on the airglow-floor path, and across all 66 referenced archive sweeps from
+0.201 to 0.150 mag, with the Ghent sweeps bit-identical.
+
+They also discharge the black-level tracker's dark-site obligation. On the two
+clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
+of the same frames gives 238.78 and 238.73, agreeing to about 0.1 ADU on a sky
+where the pedestal error the tracker corrects is no longer swamped.
+
+Still outstanding: an independent dark site on the HQ and IMX296 profiles, and
+any dark site with the airglow floor's own calibration fitted out of sample.
+
 ## Runtime ownership and data flow
 
 The solver process owns the steady-state measurement. The UI only reads the
