@@ -77,10 +77,17 @@ eligible and do not enter the table above.
 They exposed two frame properties the radiometer assumed rather than read, worth
 0.211 and 0.236 mag, both invisible on Ghent hardware by construction. See
 [ADR 0022 §3](../adr/0022-sqm-measurement.md#3-frame-properties-are-read-from-the-frame-not-assumed).
-With both read,
-the unit's mean absolute error over the eight sweeps falls from 0.506 to 0.117
-mag on the airglow-floor path, and across all 66 referenced archive sweeps from
-0.201 to 0.150 mag, with the Ghent sweeps bit-identical.
+
+With both read, the unit measures **0.127 mag mean absolute error over the eight
+sweeps and −0.005 mag median**, against 0.506 before. Its three clear sweeps
+land at +0.050, −0.131 and +0.046. The one outlier, −0.567, is a broken-cloud
+sweep. Across all 66 referenced archive sweeps the mean absolute error is 0.151
+mag, with the Ghent sweeps bit-identical.
+
+Those are the airglow-floor path, which is what the device publishes. The same
+sweeps on the factory path without the floor sit at 0.376 mag, which is the
+known dark-site bias the floor exists to remove, not a residue of these two
+corrections.
 
 They also discharge the black-level tracker's dark-site obligation. On the two
 clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
