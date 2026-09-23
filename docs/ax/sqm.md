@@ -81,8 +81,9 @@ They exposed two frame properties the radiometer assumed rather than read, worth
 With both read, the unit measures **0.127 mag mean absolute error over the eight
 sweeps and −0.005 mag median**, against 0.506 before. Its three clear sweeps
 land at +0.050, −0.131 and +0.046. The one outlier, −0.567, is a broken-cloud
-sweep. Across all 66 referenced archive sweeps the mean absolute error is 0.151
-mag, with the Ghent sweeps bit-identical.
+sweep. Across all 66 referenced archive sweeps the mean absolute error is 0.152
+mag. The Ghent HQ and IMX296 sweeps are bit-identical, and the IMX462 reference
+unit moves by at most 0.0002 mag.
 
 Those are the airglow-floor path, which is what the device publishes. The same
 sweeps on the factory path without the floor sit at 0.376 mag, which is the
