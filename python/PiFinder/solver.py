@@ -35,7 +35,7 @@ from PiFinder.sqm.black_level import BlackLevelTracker
 from PiFinder.sqm.airglow import AirglowTracker, sample_diagnostics
 from PiFinder.sqm.radiometer import (
     RadiometerAccumulator,
-    digital_gain_ratio,
+    analogue_gain_ratio,
     extract_photometry_image,
 )
 from PiFinder.state import SQM as SQMState
@@ -251,7 +251,7 @@ def update_radiometric_sqm(
             float(sample["exposure_sec"]),
             float(sample["background_per_pixel"]),
             stable=not cloudy_now,
-            gain_ratio=digital_gain_ratio(sample, sqm_calculator.profile),
+            gain_ratio=analogue_gain_ratio(sample, sqm_calculator.profile),
         )
     if airglow_tracker is not None and fresh_sample:
         airglow_tracker.add_sample(

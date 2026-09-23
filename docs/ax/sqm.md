@@ -74,21 +74,24 @@ hand-held SQM-L meters that agreed to ±0.1, are archived as
 the archive; everything before them stops at 21.1. They are not factory-fit
 eligible and do not enter the table above.
 
-They exposed two frame properties the radiometer assumed rather than read, worth
-0.211 and 0.236 mag, both invisible on Ghent hardware by construction. See
+They exposed a frame property the radiometer assumed rather than read: the
+frame extent, worth 0.211 mag, invisible on Ghent hardware because every
+earlier sweep is a crop. See
 [ADR 0022 §3](../adr/0022-sqm-measurement.md#3-frame-properties-are-read-from-the-frame-not-assumed).
 
-With both read, the unit measures **0.127 mag mean absolute error over the eight
-sweeps and −0.005 mag median**, against 0.506 before. Its three clear sweeps
-land at +0.050, −0.131 and +0.046. The one outlier, −0.567, is a broken-cloud
-sweep. Across all 66 referenced archive sweeps the mean absolute error is 0.152
-mag. The Ghent HQ and IMX296 sweeps are bit-identical, and the IMX462 reference
-unit moves by at most 0.0002 mag.
+With the extent read, the unit measures **0.315 mag mean absolute error over the
+eight sweeps and −0.241 mag median** on the airglow-floor path, which is what the
+device publishes, against 0.501 and −0.506 before. The factory path without the
+floor gives 0.591. Every cropped dataset in the archive is bit-identical.
 
-Those are the airglow-floor path, which is what the device publishes. The same
-sweeps on the factory path without the floor sit at 0.376 mag, which is the
-known dark-site bias the floor exists to remove, not a residue of these two
-corrections.
+**The remaining −0.24 mag is open.** It is not the digital gain: a same-unit test
+shows the ISP applies it after the raw stream
+([§3.2](../adr/0022-sqm-measurement.md#32-scaling-the-analogue-gain-not-the-reported-digital-gain)).
+It is not the pedestal
+([§4.3](../adr/0022-sqm-measurement.md#43-the-reported-black-level-is-not-a-third-source)).
+The sweeps point at 36° to 48° altitude, and on the IMX462 reference unit error
+against airmass is flat to within the noise, which allows at most about 0.1 mag
+from pointing. Within the eight sweeps, 36° and 48° give the same error.
 
 They also discharge the black-level tracker's dark-site obligation. On the two
 clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
