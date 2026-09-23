@@ -488,16 +488,19 @@ parts of the estimator, and failed the same way each time.
 - §3 moves only full-sensor frames. Over all 66 referenced archive sweeps,
   every cropped dataset replays bit-identical, frame for frame, on both the
   factory and the airglow path. Archive mean absolute error falls from 0.251
-  to 0.230 mag on the factory path and from 0.201 to 0.179 mag on the airglow
+  to 0.230 mag on the factory path and from 0.205 to 0.188 mag on the airglow
   path.
 - The one full-sensor unit (markcasazza, stock image, 21.3 to 21.6 mag site)
-  still reads **0.24 mag bright** on the airglow path after §3 (mean absolute
-  error 0.315). The cause is not gain (§3.2) and not the pedestal (§4.3).
-  Pointing altitude explains at most about
-  0.1 mag. The unit's stellar zero point is 0.13 ± 0.08 mag higher than the
-  reference unit's, so it collects more light, and that explains about half.
-  A factory radiometric zero point cannot see unit-to-unit throughput, and the
-  stellar correction of §2 only corrects attenuation, in one direction.
+  still reads **0.36 mag bright** on the airglow path after §3 (mean absolute
+  error 0.369). The cause is not gain (§3.2), not the pedestal (§4.3), not the
+  settings or the focal length. The lens f-number and the direction of the
+  reference meters are not recorded. The stellar zero point cannot settle it,
+  because it measures the site's air as well as the unit.
+- Archive numbers come from one replay, `report_sqm_production_archive.py`,
+  which drives the device's own `update_radiometric_sqm`. An earlier separate
+  airglow replay stamped a rolling-median floor where production stamps each
+  sample's own floor and pedestal. It disagreed with production on 815 of 1859
+  frames, by up to 1.7 mag, and is retired.
 - §5 and §6 each changed the published scale, so SQM logs are not comparable
   across firmware that predates them. `radiometric_zero_point_effective` in the
   archive is what makes comparison possible at all.

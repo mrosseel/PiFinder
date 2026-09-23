@@ -79,27 +79,32 @@ frame extent, worth 0.211 mag, invisible on Ghent hardware because every
 earlier sweep is a crop. See
 [ADR 0022 §3](../adr/0022-sqm-measurement.md#3-frame-properties-are-read-from-the-frame-not-assumed).
 
-With the extent read, the unit measures **0.315 mag mean absolute error over the
-eight sweeps and −0.241 mag median** on the airglow-floor path, which is what the
-device publishes, against 0.501 and −0.506 before. The factory path without the
-floor gives 0.591. Every cropped dataset in the archive is bit-identical.
+With the extent read, the unit measures **0.369 mag mean absolute error over the
+eight sweeps and −0.356 mag median** on the production path with the airglow
+floor, against 0.516 and −0.501 before. The factory path without the floor
+gives 0.591, against 0.762. Every cropped dataset in the archive is
+bit-identical. These numbers come from `python/scripts/report_sqm_production_archive.py`,
+which replays each frame through the device's own `update_radiometric_sqm`.
 
-**The remaining −0.24 mag is open.** It is not the digital gain: a same-unit test
-shows the ISP applies it after the raw stream
-([§3.2](../adr/0022-sqm-measurement.md#32-scaling-the-analogue-gain-not-the-reported-digital-gain)).
-It is not the pedestal
-([§4.3](../adr/0022-sqm-measurement.md#43-the-reported-black-level-is-not-a-third-source)).
-The sweeps point at 36° to 48° altitude, and on the IMX462 reference unit error
-against airmass is flat to within the noise, which allows at most about 0.1 mag
-from pointing. Within the eight sweeps, 36° and 48° give the same error.
+**The remaining −0.36 mag is open.** Checked and ruled out:
 
-The unit itself is more sensitive. Its per-second stellar zero point, from the
-three clear sweeps and corrected for extinction, is **0.13 ± 0.08 mag** higher
-than the reference unit's (0.15 ± 0.08 with a higher extinction coefficient).
-A more sensitive unit reads the sky brighter by the same amount against a
-factory zero point, so this explains about half of the −0.24. Pointing and
-throughput together account for the residue within the noise. Neither term is
-significant alone, and more clear sweeps from the same unit would settle it.
+- the reported digital gain: the ISP applies it after the raw stream
+  ([§3.2](../adr/0022-sqm-measurement.md#32-scaling-the-analogue-gain-not-the-reported-digital-gain));
+- the pedestal
+  ([§4.3](../adr/0022-sqm-measurement.md#43-the-reported-black-level-is-not-a-third-source));
+- focal length, exposure and analogue gain: the solved field, the delivered
+  exposure and the delivered gain match the reference unit;
+- sky colour: R/G 1.00 to 1.05, inside the floor calibration;
+- dark current: 1.8 ADU/s on the reference unit at night, about 0.03 mag.
+
+The Milky Way explains the two worst sweeps, at galactic latitude −6° and −1°.
+Away from it the median is still −0.35.
+
+Two causes cannot be seen in the archive: the lens f-number or iris setting,
+and the direction the reference meters pointed. At a dark site the sky at the
+unit's 36° to 48° altitude is 0.2 to 0.3 mag brighter than at the zenith,
+mostly from airglow. The stellar zero point cannot separate the unit from the
+site, because it also measures the air above the site.
 
 They also discharge the black-level tracker's dark-site obligation. On the two
 clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
