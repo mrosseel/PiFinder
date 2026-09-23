@@ -93,6 +93,14 @@ The sweeps point at 36° to 48° altitude, and on the IMX462 reference unit erro
 against airmass is flat to within the noise, which allows at most about 0.1 mag
 from pointing. Within the eight sweeps, 36° and 48° give the same error.
 
+The unit itself is more sensitive. Its per-second stellar zero point, from the
+three clear sweeps and corrected for extinction, is **0.13 ± 0.08 mag** higher
+than the reference unit's (0.15 ± 0.08 with a higher extinction coefficient).
+A more sensitive unit reads the sky brighter by the same amount against a
+factory zero point, so this explains about half of the −0.24. Pointing and
+throughput together account for the residue within the noise. Neither term is
+significant alone, and more clear sweeps from the same unit would settle it.
+
 They also discharge the black-level tracker's dark-site obligation. On the two
 clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
 of the same frames gives 238.78 and 238.73, agreeing to about 0.1 ADU on a sky

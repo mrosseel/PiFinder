@@ -493,7 +493,11 @@ parts of the estimator, and failed the same way each time.
 - The one full-sensor unit (markcasazza, stock image, 21.3 to 21.6 mag site)
   still reads **0.24 mag bright** on the airglow path after §3 (mean absolute
   error 0.315). The cause is not gain (§3.2) and not the pedestal (§4.3).
-  Pointing altitude explains at most about 0.1 mag. The rest is open.
+  Pointing altitude explains at most about
+  0.1 mag. The unit's stellar zero point is 0.13 ± 0.08 mag higher than the
+  reference unit's, so it collects more light, and that explains about half.
+  A factory radiometric zero point cannot see unit-to-unit throughput, and the
+  stellar correction of §2 only corrects attenuation, in one direction.
 - §5 and §6 each changed the published scale, so SQM logs are not comparable
   across firmware that predates them. `radiometric_zero_point_effective` in the
   archive is what makes comparison possible at all.
