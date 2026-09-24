@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-24T23:47:26+00:00",
+        "kind": "pr",
+        "label": "PR#46-b0be348",
+        "notes": "NixOS 25.11 reached end of life on 2026-06-30. The lock pointed to the 2026-02-09 commit. This moves nixpkgs to the final 25.11 commit (b6018f87), which has the security fixes up to end of life.\n\n- The Raspberry Pi kernel stays at 6.12.47, so the camera patches and overlays do not change.\n- Python goes from 3.13.11 to 3.13.12, systemd from 258.3 to 258.7 and OpenSSH from 10.2p1 to 10.3p1.\n- The system, the SD image and the migration image evaluate locally.\n\nThe move to NixOS 26.05 is a separate change.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 46,
+        "source_ref": "chore/nixpkgs-25.11-final",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "b0be348259260f13770f005db41ffb4f7cb96ef7",
+        "store_path": "/nix/store/cj1g7db2735f4bmhrdvi3lr7y23kcy0s-nixos-system-pifinder-25.11.20260630.b6018f8",
+        "title": "chore(nixos): bump nixpkgs to the last nixos-25.11 commit",
+        "version": "PR#46-b0be348"
+      },
+      {
+        "available": true,
         "built_at": "2026-07-29T16:05:11+00:00",
         "kind": "pr",
         "label": "PR#33-cf65033",
@@ -33,6 +47,6 @@
       }
     ]
   },
-  "generated_at": "2026-08-17T21:48:23+00:00",
+  "generated_at": "2026-09-24T23:47:26+00:00",
   "schema": 1
 }
