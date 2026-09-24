@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-24T23:54:17+00:00",
+        "kind": "pr",
+        "label": "PR#47-f1aafb0",
+        "notes": "Five commits from the pre-migration audit.\n\n- **Root only through sudo.** Root has no password. `pifinder` is in `wheel`, so `sudo` gives full root and asks the `pifinder` password. The web password change uses `pifinder-set-password`, which changes only the `pifinder` password.\n- **Rollback generations are kept.** The weekly GC deletes no generations. The upgrade keeps the 3 newest by count.\n- **Watchdog.** It writes its failure files as `pifinder`, so a symlink in the data folder cannot redirect a root write.\n- **Web API login.** `POST /api/key`, `POST /api/stop` and `GET /api/camera/*` need the Web UI login. Read-only status endpoints stay open. `pf_remote` logs in on a 401.\n- **Upgrade keys.** The upgrade no longer downloads signing keys from the cache. It checks signatures only against the configured keys.\n- **First boot.** It waits for the clock first, then tries the manifest 5 times and the download 3 times. If all tries fail, it runs again at the next boot, as before.\n- **release.yml.** The current dev cache key, and read-only default permissions.\n\nNot in this PR: `kmem` stays in the `pifinder` groups until a device test shows that the keypad GPIO works without it.\n\nChecks: the system and the migration image evaluate, the changed scripts pass `bash -n`, ruff and mypy pass, and 1634 unit tests pass. It is not tested on a device.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 47,
+        "source_ref": "fix/nixos-hardening",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "f1aafb053eb236f96445de849cce55d73b30b02f",
+        "store_path": "/nix/store/jrrbd30qy0cicg2ry5d64ihrx7bxlb1s-nixos-system-pifinder-25.11.20260630.b6018f8",
+        "title": "fix(nixos): hardening before the migration release",
+        "version": "PR#47-f1aafb0"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-24T23:47:26+00:00",
         "kind": "pr",
         "label": "PR#46-b0be348",
@@ -47,6 +61,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-24T23:47:26+00:00",
+  "generated_at": "2026-09-24T23:54:18+00:00",
   "schema": 1
 }
