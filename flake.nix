@@ -436,7 +436,17 @@
       # btrfs root with zstd (NixOS ADR 0009, proposed): data single / dup.
       pifinder-btrfs = (mkPifinderSystem {
         includeSDImage = true;
-        extraModules = [ { pifinder.rootFs = "btrfs"; } ];
+        extraModules = [
+          { pifinder.rootFs = "btrfs"; }
+          # Spike only: keep the journal on the card, so a device without
+          # network can be debugged by reading the card after power-off.
+          ({ lib, ... }: {
+            services.journald.extraConfig = lib.mkForce ''
+              Storage=persistent
+              SystemMaxUse=100M
+            '';
+          })
+        ];
       }).config.system.build.sdImage;
       pifinder-btrfs-dup = (mkPifinderSystem {
         includeSDImage = true;
