@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T08:15:30+00:00",
+        "kind": "pr",
+        "label": "PR#50-f14d064",
+        "notes": "The device imported a patched NAR with `nix-store --import`, using references and deriver from the delta server and no signature check. A bad or compromised delta server could put any content at a target path, as root.\n\n**Now:**\n1. Fetch the target's signed `.narinfo` from `cache.pifinder.eu` (the upgrade's `CACHES`).\n2. Put it with the rebuilt NAR into a temporary `file://` binary cache. Only `URL` and `Compression` change, and the signature does not cover them.\n3. `nix copy --from file://\u2026`: Nix checks the signature against the configured `trusted-public-keys`, and the NarHash, NarSize and references.\n\nThe delta server now supplies only patch bytes. `deltaUrl` stays empty, so this changes nothing on devices until the differ is switched on.\n\n**Checks**\n- 54 unit tests pass (`test_delta_updates.py`, `test_nixos_upgrade.py`). ruff and mypy pass.\n- A real test with Nix, a real narinfo and NAR from the `pifinder` cache and a separate test store:\n  - correct key and a good NAR: imported;\n  - wrong key: refused (\"lacks a signature by a trusted key\");\n  - changed NAR byte: refused (hash mismatch);\n  - narinfo with no `Sig` line: refused before the import.\n- Content-addressed paths (`CA:`) import without a signature, which is normal Nix behaviour. A changed NAR is still refused for them.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 50,
+        "source_ref": "fix/delta-signed-import",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "f14d06423b5f9c84759753c6245e64f338a54367",
+        "store_path": "/nix/store/n9kwgnrwvgxrqjzh9339rhsj9n5s8r4v-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(delta): import patched paths only through Nix's signature check",
+        "version": "PR#50-f14d064"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T03:17:09+00:00",
         "kind": "pr",
         "label": "PR#49-72a810a",
@@ -89,6 +103,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T03:17:09+00:00",
+  "generated_at": "2026-09-25T08:15:31+00:00",
   "schema": 1
 }
