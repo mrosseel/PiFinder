@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T09:04:27+00:00",
+        "kind": "pr",
+        "label": "PR#52-541f3a8",
+        "notes": "On `pifinder-mr.local` the Data page showed `SyntaxError: Unexpected token '<', \"<!doctype \"... is not valid JSON`.\n\n**Cause:** `PiFinder_data` holds a symlink into `/nix/store` (`pifinder-gaia-stars-1.0`). `list_dir` resolved it, `relative_to` raised `ValueError`, nothing caught it, and `/data/api/list` returned an HTML 500 page. The device log shows the traceback.\n\n**Fix:** the listing skips an entry that points outside the data root. Every other Data operation already refuses such paths.\n\nChecks: a new test for the case, and 26 tests in `test_data_browser.py` pass. ruff passes.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 52,
+        "source_ref": "fix/data-page-symlink",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "541f3a86049a74624af943e8b15e1fc015b61c48",
+        "store_path": "/nix/store/lg6d2jagf8isharr2lsb2fjj00wn1ns2-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(web): Data page lists a folder with a symlink out of the data root",
+        "version": "PR#52-541f3a8"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T08:53:11+00:00",
         "kind": "pr",
         "label": "PR#51-9dec226",
@@ -117,6 +131,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T08:53:12+00:00",
+  "generated_at": "2026-09-25T09:04:28+00:00",
   "schema": 1
 }
