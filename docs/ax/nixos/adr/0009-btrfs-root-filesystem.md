@@ -39,8 +39,20 @@ If U-Boot cannot read compressed extents, keep `/boot` uncompressed (`chattr +m`
 - **Existing NixOS devices.** Devices that already run NixOS on ext4 stay on ext4. An in-place conversion (`btrfs-convert`) is not planned. Only new images and new migrations get btrfs.
 - **Recovery tools.** The recovery path and the SSH troubleshooting notes must cover `btrfs scrub` and `btrfs check` in place of `e2fsck`.
 
+## Fault tolerance
+
+btrfs can keep two copies of each block on the same device (the DUP profile). When a read or `btrfs scrub` finds a checksum error, btrfs repairs the block from the second copy. Metadata and data have separate profiles.
+
+- **Metadata: DUP.** This is the btrfs default on a single device. Metadata is small, so the cost is low, and it protects the filesystem structure itself.
+- **Data: single, unless the spike shows DUP is worth it.** Data DUP doubles the space that data uses (compression gives back part of it) and doubles every data write, which means more SD wear and slower upgrades. It survives a bad block, but not a dead card or a failed card controller. The btrfs documentation also warns that some flash controllers de-duplicate identical writes internally. Then both copies can end up in the same physical block, and DUP gives no protection.
+- **The Nix store without data DUP.** A bad block in a store path gives a checksum error instead of wrong bytes. `nix-store --repair-path` then downloads a good copy from the binary cache, so the system can be repaired while the device has internet. The recovery notes must describe this step.
+- **User data.** Observations, `config.json`, locations, equipment and observing lists are the only data that cannot be downloaded again. They are small, so a backup protects them better than DUP: a copy in a second place on the card, and a download through the web UI's Data page.
+
+Spike addition: format a second card with `-d dup` and record the used space, the upgrade time and a `btrfs scrub` repair after a deliberately damaged data block, next to the single-data card. Choose the data profile from those numbers.
+
 ## Considered options
 
+- **Data DUP on every device, not chosen yet.** Repairs a bad data block on its own, but at twice the data space and writes, and with no protection when the card controller de-duplicates. The spike decides.
 - **Stay on ext4, rejected if the spike passes.** Simplest and proven with U-Boot, but no compression and no data checksums.
 - **f2fs, rejected.** Made for flash and supports compression, but U-Boot has no f2fs reader, so `/boot` would need its own partition, against 0007.
 - **ext4 root with a separate compressed partition for `/nix`, rejected.** Keeps U-Boot on ext4, but splits the card into fixed sizes and adds a partition to the migration.
