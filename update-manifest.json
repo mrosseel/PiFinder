@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T15:25:47+00:00",
+        "kind": "pr",
+        "label": "PR#55-0f8b4a2",
+        "notes": "The upgrade log now has one line per run, for example:\n\n`delta prefetch: 12 of 30 missing path(s) imported as patches; 15 had no local base, 3 patch(es) failed, 18 download in full`\n\nIt is also the target build for the first differ test on `pifinder-mr`, which now runs the `/tmp` fix (#54).\n\nChecks: 35 tests in `test_delta_updates.py` pass (1 new). ruff and mypy pass.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 55,
+        "source_ref": "feat/delta-summary",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "0f8b4a2984c18023366027057c2cbd7ce3f45924",
+        "store_path": "/nix/store/x3irmrmmjsw4h6zknns4vmwhvv9h6vhr-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "feat(delta): log one summary line per upgrade",
+        "version": "PR#55-0f8b4a2"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T09:58:36+00:00",
         "kind": "pr",
         "label": "PR#54-cc8938c",
@@ -159,6 +173,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T09:58:36+00:00",
+  "generated_at": "2026-09-25T15:25:47+00:00",
   "schema": 1
 }
