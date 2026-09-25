@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T15:48:40+00:00",
+        "kind": "pr",
+        "label": "PR#56-df85455",
+        "notes": "On `pifinder-mr` the `.local` name vanished, while the device was up on its IP.\n\n**Device log:**\n- `pifinder-hostname`: `avahi-set-host-name` failed with `Daemon not running`, so the script restarted avahi.\n- `avahi-daemon`: `rm: cannot remove '/run/avahi-daemon/pid': Permission denied`, then `Failed to start Avahi mDNS/DNS-SD Stack`.\n- `/run/avahi-daemon` and `pid` belong to `avahi`. The avahi unit's sandbox has no `CAP_DAC_OVERRIDE`, so the `ExecStartPre` cleanup, although run as root, cannot remove the file.\n\n**Fix:**\n- `ExecStartPre` runs with full privileges (systemd `+` prefix), so a restart works.\n- `pifinder-hostname` retries `avahi-set-host-name` for up to 15 s before the fallback restart.\n\nChecks: `pifinder` and `pifinder-migration` evaluate. Not yet tested on a device.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 56,
+        "source_ref": "fix/mdns-hostname",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "df8545592f12d9d640b502c917cf4e207ec6df33",
+        "store_path": "/nix/store/nkh0vzaknd7nnlvpank1m1fqd5vwj9l9-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(nixos): keep mDNS up after the custom hostname is applied",
+        "version": "PR#56-df85455"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T15:25:47+00:00",
         "kind": "pr",
         "label": "PR#55-0f8b4a2",
@@ -173,6 +187,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T15:25:47+00:00",
+  "generated_at": "2026-09-25T15:48:41+00:00",
   "schema": 1
 }
