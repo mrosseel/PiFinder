@@ -318,6 +318,9 @@
     pkgsAarch64 = import nixpkgs { system = "aarch64-linux"; };
     # SD boot: skip PCI/USB/net probe, go straight to mmc extlinux
     ubootSD = pkgsAarch64.ubootRaspberryPi4_64bit.override {
+      # Try the next btrfs copy (DUP) when a compressed extent fails to
+      # decompress; U-Boot does not check data checksums (NixOS ADR 0009).
+      extraPatches = [ ./nixos/patches/uboot-btrfs-try-next-copy.patch ];
       extraConfig = ''
         CONFIG_CMD_PXE=y
         CONFIG_CMD_SYSBOOT=y

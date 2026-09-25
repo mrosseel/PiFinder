@@ -14,3 +14,7 @@ Steps 1 and 2 of the ADR 0009 spike, runnable on an x86_64 dev machine.
 - `scrubtest.nix`: NixOS VM test of the damaged images (read error with single,
   read repair with dup).
 - `resizetest.nix`: NixOS VM test of the first-boot grow commands.
+- U-Boot copy fallback (`nixos/patches/uboot-btrfs-try-next-copy.patch`):
+  build `ubootQemuAarch64` with `extraPatches` set to the patch and run
+  `uboot_btrfs_read.py` on the `dup-bad` image from `corrupt.py`. Without the
+  patch the kernel load fails; with it the kernel loads with the right CRC32.
