@@ -27,6 +27,17 @@ On one Pi 4B (PiFinder rev 3) and one CM4 (PiFinder v4):
 
 If U-Boot cannot read compressed extents, keep `/boot` uncompressed (`chattr +m` or a no-compression property on `/boot`) and compress only the rest.
 
+## Spike results: steps 1 and 2 (2026-09-25, no hardware)
+
+Code and scripts: PR #61 (`pifinder.rootFs`, `images.pifinder-btrfs`, `nixos/tests/btrfs-spike/`).
+
+- **U-Boot reads compressed btrfs.** U-Boot 2026.04 for QEMU's aarch64 `virt` machine, with `CONFIG_FS_BTRFS` (the same btrfs reader as the Pi build), loaded the kernel (33 MB), the initrd and the Pi 4 device tree from the real `images.pifinder-btrfs` SD image, byte for byte (CRC32). `sysboot` with the real `extlinux.conf` (`FDTDIR`) reached "Starting kernel". So `/boot` can stay compressed.
+- **Space.** Used space on the root partition of the same system: ext4 3163 MiB, btrfs 1313 MiB (58 % less). With data DUP the data is stored twice (a 4645 MiB partition).
+- **U-Boot and damaged blocks.** U-Boot does not check data checksums, and it tries the second copy only when the device reports a read error (`fs/btrfs/inode.c`). A damaged compressed kernel block fails to decompress, and U-Boot refuses the file, with single and with DUP. An uncompressed file would load with the bad bytes. Compression of `/boot` therefore also protects the boot. A small U-Boot patch could try the next copy when decompression fails.
+- **Linux and damaged blocks.** With single, reading the damaged file fails and `btrfs scrub` reports an uncorrectable error. With DUP, the read returns the right content and the kernel repairs the bad copy during the read ("read error corrected").
+- **First-boot grow.** The commands of the btrfs grow step grew a partition from 400 MiB to 2450 MiB, and `btrfs scrub` found no errors.
+- **Not tested yet (step 3, needs hardware):** a real boot on a Pi 4B and a CM4, cold boots, power cuts during an upgrade, upgrade, rollback and camera switch on btrfs, and upgrade time.
+
 ## Consequences if accepted
 
 - **Filesystem layout.** One btrfs filesystem, no subvolumes, so U-Boot reads `/boot` from the default subvolume. Mount options `compress=zstd:1,noatime`. `fileSystems."/".fsType = "btrfs"`, and the initrd needs the btrfs module.
