@@ -49,6 +49,7 @@
     commonModules = [
       nixos-hardware.nixosModules.raspberry-pi-4
       ./nixos/hardware.nix
+      ./nixos/btrfs-root.nix
       ./nixos/networking.nix
       ./nixos/services.nix
       ./nixos/python-env.nix
@@ -65,7 +66,7 @@
       headlessModule
     ];
 
-    mkPifinderSystem = { includeSDImage ? false, kernel ? null }:
+    mkPifinderSystem = { includeSDImage ? false, kernel ? null, extraModules ? [] }:
     nixpkgs.lib.nixosSystem {
       system = "aarch64-linux";
       # pifinderKernel must always be present in specialArgs: a NixOS module's
@@ -86,8 +87,10 @@
             imx477.configuration = { pifinder.cameraType = "imx477"; };
           };
         })
-        ({ lib, ... }: {
-          boot.supportedFilesystems = lib.mkForce [ "vfat" "ext4" ];
+        ({ config, lib, ... }: {
+          boot.supportedFilesystems = lib.mkForce (
+            [ "vfat" "ext4" ] ++ lib.optional (config.pifinder.rootFs == "btrfs") "btrfs"
+          );
           boot.loader.timeout = 0;
         })
       ] ++ nixpkgs.lib.optionals includeSDImage [
@@ -142,7 +145,7 @@
             fsType = "vfat";
           };
         })
-      ];
+      ] ++ extraModules;
     };
 
     mkPifinderMigration = { includeSDImage ? false }: nixpkgs.lib.nixosSystem {
@@ -318,6 +321,7 @@
       extraConfig = ''
         CONFIG_CMD_PXE=y
         CONFIG_CMD_SYSBOOT=y
+        CONFIG_FS_BTRFS=y
         CONFIG_BOOTDELAY=0
         CONFIG_PREBOOT=""
         CONFIG_BOOTCOMMAND="sysboot mmc 0:2 any 0x02400000 /boot/extlinux/extlinux.conf"
@@ -418,6 +422,15 @@
     };
     images = {
       pifinder = (mkPifinderSystem { includeSDImage = true; }).config.system.build.sdImage;
+      # btrfs root with zstd (NixOS ADR 0009, proposed): data single / dup.
+      pifinder-btrfs = (mkPifinderSystem {
+        includeSDImage = true;
+        extraModules = [ { pifinder.rootFs = "btrfs"; } ];
+      }).config.system.build.sdImage;
+      pifinder-btrfs-dup = (mkPifinderSystem {
+        includeSDImage = true;
+        extraModules = [ { pifinder.rootFs = "btrfs"; pifinder.btrfsDataProfile = "dup"; } ];
+      }).config.system.build.sdImage;
       pifinder-migration = (mkPifinderMigration { includeSDImage = true; }).config.system.build.sdImage;
     };
     packages.aarch64-linux = {
