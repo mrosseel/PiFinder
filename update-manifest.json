@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T16:48:42+00:00",
+        "kind": "pr",
+        "label": "PR#58-f372067",
+        "notes": "`kmem` gives read access to `/dev/mem`. It was on the pre-release security list.\n\n**Checked on pifinder-mr (`deced2c`):**\n- `/dev/gpiomem` is `root:gpio 0660`, and `pifinder` is in `gpio`. The keypad library uses `/dev/gpiomem` first.\n- No `pifinder` process has `/dev/mem` open or mapped.\n\n**Device test after install:** the keypad, the keypad backlight (PWM) and the buzzer.\n\nThis is also the next differ test target: the device now runs the staged-cache code (#57).\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 58,
+        "source_ref": "fix/drop-kmem",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "f3720672afb9c0bdabcf3ab994dc58ce6336f11d",
+        "store_path": "/nix/store/j56f8354rqsfx7i6x5q3kmig5b8sfl2f-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(nixos): drop the kmem group from the pifinder user",
+        "version": "PR#58-f372067"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T16:15:16+00:00",
         "kind": "pr",
         "label": "PR#57-73bd794",
@@ -201,6 +215,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T16:15:17+00:00",
+  "generated_at": "2026-09-25T16:48:43+00:00",
   "schema": 1
 }
