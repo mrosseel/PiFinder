@@ -2,7 +2,7 @@
 
 # Optional btrfs root filesystem with zstd compression (NixOS ADR 0009,
 # proposed). ext4 stays the default. With pifinder.rootFs = "btrfs" the root
-# partition (label NIXOS_SD, holding /boot, see ADR 0007) is btrfs, the SD
+# partition (label PIFINDER_SD, holding /boot, see ADR 0007) is btrfs, the SD
 # image is built with mkfs.btrfs, and the first boot grows btrfs instead of
 # ext4. U-Boot reads it with CONFIG_FS_BTRFS (ubootSD in flake.nix).
 
@@ -16,7 +16,7 @@ in
     rootFs = lib.mkOption {
       type = lib.types.enum [ "ext4" "btrfs" ];
       default = "ext4";
-      description = "Filesystem of the root partition (NIXOS_SD).";
+      description = "Filesystem of the root partition (NIXOS_SD on ext4, PIFINDER_SD on btrfs).";
     };
     btrfsDataProfile = lib.mkOption {
       type = lib.types.enum [ "single" "dup" ];
@@ -30,8 +30,10 @@ in
 
   config = lib.mkIf btrfs (lib.mkMerge [
     {
+      # A btrfs root is always newly created (SD image or migration), so it
+      # gets the PiFinder label; ext4 roots keep NIXOS_SD.
       fileSystems."/" = lib.mkForce {
-        device = "/dev/disk/by-label/NIXOS_SD";
+        device = "/dev/disk/by-label/PIFINDER_SD";
         fsType = "btrfs";
         options = [ "compress=zstd:1" "noatime" ];
       };
@@ -40,6 +42,7 @@ in
     }
 
     (lib.optionalAttrs hasSdImage {
+      sdImage.rootVolumeLabel = "PIFINDER_SD";
       sdImage.rootFilesystemImage = pkgs.callPackage ./make-btrfs-fs.nix {
         inherit (config.sdImage) storePaths compressImage;
         populateImageCommands = config.sdImage.populateRootCommands;
