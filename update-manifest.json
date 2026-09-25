@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T22:13:09+00:00",
+        "kind": "pr",
+        "label": "PR#63-9533912",
+        "notes": "**Fault (CM4 PiFinder v4 without a battery):** the boot splash showed a black bar and a red streak, and the app UI was rotated. `screen_direction` (for example Rev4 Left) did not help.\n\n**Cause:** the display driver and the buzzer followed the BQ25895 probe. Without a battery the charger does not answer, so the rev4 got the 128\u00d7128 SSD1351 driver on its 176\u00d7176 panel. The code documented a battery as mandatory, with a missing ACK only on bare prototype boards.\n\n**Fix:** `HardwareCapabilities.is_rev4`: true when the charger answers **or** the board is a Compute Module (`/proc/device-tree/model`; rev4 is the only PiFinder built on one). The display (`main.py`, `splash.py`) and the buzzer follow `is_rev4`. The battery monitor and icon still need the charger (`has_bq25895`).\n\n**Checks**\n- 12 tests in `test_hardware_detect.py` (6 new); 1656 unit tests pass. ruff and mypy pass.\n- aarch64 (pi5), the image's `pifinder-env`, CM4 device-tree view, no charger: `is_rev4=True`, SSD1333, `has_bq25895=False`.\n\nSeparate from #62 (Blinka board id on a CM4); a CM4 needs both.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 63,
+        "source_ref": "fix/rev4-by-board-model",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "9533912a24679f7ea70f77254244e568a6d6b6bd",
+        "store_path": "/nix/store/ghxcm4050k5k0p7z6cvlfw0h5c3g0fyz-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(hardware): detect rev4 by the board model when no battery is in",
+        "version": "PR#63-9533912"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T21:38:09+00:00",
         "kind": "pr",
         "label": "PR#62-f2cac47",
@@ -243,6 +257,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T21:38:10+00:00",
+  "generated_at": "2026-09-25T22:13:10+00:00",
   "schema": 1
 }
