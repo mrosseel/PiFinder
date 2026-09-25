@@ -49,6 +49,7 @@ Code and scripts: PR #61 (`pifinder.rootFs`, `images.pifinder-btrfs`, `nixos/tes
 - **Full disk.** btrfs recovers badly from a completely full filesystem. Keep a reserve: the upgrade refuses to start below a free-space floor, and the weekly GC keeps running. On a 32 GB card this is a small risk.
 - **Existing NixOS devices.** Devices that already run NixOS on ext4 stay on ext4. An in-place conversion (`btrfs-convert`) is not planned. Only new images and new migrations get btrfs.
 - **Recovery tools.** The recovery path and the SSH troubleshooting notes must cover `btrfs scrub` and `btrfs check` in place of `e2fsck`.
+- **Scrub and U-Boot patch.** `services.btrfs.autoScrub` (weekly, persistent, idle I/O) and the U-Boot copy-fallback patch in `ubootSD`, see "Boot files: scrub in Linux, and a U-Boot fallback". The spike checks the patch in QEMU with a damaged first copy of a compressed kernel on a DUP image: the load must succeed with the right CRC32.
 
 ## Fault tolerance
 
@@ -58,6 +59,13 @@ btrfs can keep two copies of each block on the same device (the DUP profile). Wh
 - **Data: single, unless the spike shows DUP is worth it.** Data DUP doubles the space that data uses (compression gives back part of it) and doubles every data write, which means more SD wear and slower upgrades. It survives a bad block, but not a dead card or a failed card controller. The btrfs documentation also warns that some flash controllers de-duplicate identical writes internally. Then both copies can end up in the same physical block, and DUP gives no protection.
 - **The Nix store without data DUP.** A bad block in a store path gives a checksum error instead of wrong bytes. `nix-store --repair-path` then downloads a good copy from the binary cache, so the system can be repaired while the device has internet. The recovery notes must describe this step.
 - **User data.** Observations, `config.json`, locations, equipment and observing lists are the only data that cannot be downloaded again. They are small, so a backup protects them better than DUP: a copy in a second place on the card, and a download through the web UI's Data page.
+
+### Boot files: scrub in Linux, and a U-Boot fallback
+
+U-Boot reads `/boot` at power-on but cannot repair anything, and Linux does all repairs (see the spike results). Two measures close that gap:
+
+- **Regular scrub.** `services.btrfs.autoScrub` runs `btrfs scrub` on `/` every week, with `Persistent=true` so a device that was switched off catches up at its next boot, and with the idle I/O class so it does not slow an observing session. Scrub reads every block, checks its checksum and, with DUP, repairs a bad copy from the good one. So a bad copy of a kernel or initrd is repaired while the system runs, before U-Boot needs it. With single data, scrub still reports the error, and the watchdog and recovery notes tell the user to reinstall the build. A scrub of the whole card (about 1.3 GB used) reads the data once and writes only when it repairs, so its SD wear is small.
+- **U-Boot patch.** In `fs/btrfs/inode.c`, `btrfs_read_extent_reg()` tries the next copy only when the device reports a read error; a copy that reads but fails to decompress ends the load. The patch moves the decompression into the copy loop: when `btrfs_decompress()` fails, U-Boot tries the next copy, and it gives up only when no copy decompresses. With DUP this lets U-Boot boot a compressed file even when one copy went bad after the last scrub. It does not cover uncompressed files, because U-Boot does not read the data checksums; `/boot` therefore stays compressed. The patch is small, goes into `ubootSD` as a local patch, and is offered upstream to U-Boot.
 
 Spike addition: format a second card with `-d dup` and record the used space, the upgrade time and a `btrfs scrub` repair after a deliberately damaged data block, next to the single-data card. Choose the data profile from those numbers.
 
