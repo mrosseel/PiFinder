@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T09:17:13+00:00",
+        "kind": "pr",
+        "label": "PR#53-af95eb1",
+        "notes": "**Fault on pifinder-mr (26.05 build, imx477):** the camera process fails in `Picamera2()` with `RuntimeError: Unable to convert std::shared_ptr<T> to Python when the bound type does not use std::shared_ptr or py::smart_holder as its holder type`.\n\n**Cause:** libcamera 0.7.0 binds `Camera` with its own holder (`PyCameraSmartPtr`) but casts a `std::shared_ptr<Camera>` in `CameraManager.cameras`. pybind11 3.0.4 (26.05) refuses that. pybind11 3.0.1 (25.11) accepted it.\n\n**Fix:** libcamera 0.7.2 binds `Camera` with pybind11's smart holder (upstream `cb5fcd20`). The overlay builds 0.7.2 (same source hash as the nixpkgs master recipe), adds `libyuv`, and turns off the cam tool outputs, the GPU software ISP and `libdw`. The imx290 optical black patch applies unchanged.\n\n**Checks:** an x86_64 build of the same libcamera override passes. `import libcamera` and `CameraManager.singleton().cameras` work there (no camera attached). The system evaluates. Not yet tested on a device.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 53,
+        "source_ref": "fix/libcamera-0.7.2",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "af95eb1725c9b11c787f1b82e3f87d5303f4332e",
+        "store_path": "/nix/store/xl0y4vqy9himryqpf6a9dv9a3j0pwxmh-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(nixos): libcamera 0.7.2 so picamera2 finds the camera on 26.05",
+        "version": "PR#53-af95eb1"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T09:04:27+00:00",
         "kind": "pr",
         "label": "PR#52-541f3a8",
@@ -131,6 +145,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T09:04:28+00:00",
+  "generated_at": "2026-09-25T09:17:13+00:00",
   "schema": 1
 }
