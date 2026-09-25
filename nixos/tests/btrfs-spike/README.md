@@ -18,3 +18,8 @@ Steps 1 and 2 of the ADR 0009 spike, runnable on an x86_64 dev machine.
   build `ubootQemuAarch64` with `extraPatches` set to the patch and run
   `uboot_btrfs_read.py` on the `dup-bad` image from `corrupt.py`. Without the
   patch the kernel load fails; with it the kernel loads with the right CRC32.
+- `kernelwrite.nix`: rewrites `extlinux.conf` through the Linux kernel on a
+  `compress=zstd` mount, as an upgrade does. With `SPIKE_KERNEL=latest`
+  (kernel 7.x) the file becomes an inline extent that U-Boot 2026.04 cannot
+  read ("failed to decompress: 70"); with
+  `nixos/patches/uboot-btrfs-inline-zstd-fix.patch` it reads.

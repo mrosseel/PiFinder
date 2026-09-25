@@ -318,9 +318,17 @@
     pkgsAarch64 = import nixpkgs { system = "aarch64-linux"; };
     # SD boot: skip PCI/USB/net probe, go straight to mmc extlinux
     ubootSD = pkgsAarch64.ubootRaspberryPi4_64bit.override {
-      # Try the next btrfs copy (DUP) when a compressed extent fails to
-      # decompress; U-Boot does not check data checksums (NixOS ADR 0009).
-      extraPatches = [ ./nixos/patches/uboot-btrfs-try-next-copy.patch ];
+      # btrfs (NixOS ADR 0009):
+      # - upstream 6f0719e4c4 (U-Boot next, after 2026.04): read small files
+      #   the kernel wrote as compressed inline extents, such as extlinux.conf;
+      #   without it, kernels that compress the whole block (7.x) make
+      #   extlinux.conf unreadable after the first upgrade.
+      # - local: try the next copy (DUP) when a compressed extent fails to
+      #   decompress; U-Boot does not check data checksums.
+      extraPatches = [
+        ./nixos/patches/uboot-btrfs-inline-zstd-fix.patch
+        ./nixos/patches/uboot-btrfs-try-next-copy.patch
+      ];
       extraConfig = ''
         CONFIG_CMD_PXE=y
         CONFIG_CMD_SYSBOOT=y
