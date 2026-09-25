@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T09:58:36+00:00",
+        "kind": "pr",
+        "label": "PR#54-cc8938c",
+        "notes": "First real differ test on `pifinder-mr` (upgrade `45ea5c7` \u2192 `1731d41`):\n- **Server:** the differ computed every patch, and they are tiny (for example 230 B for a 209 KB NAR).\n- **Device:** it refused every patch with `not enough free space (209715200 < 536871305)`.\n\n**Cause:** the work dir was in `/tmp`, which the device mounts as a 200 MiB tmpfs (`boot.tmp.tmpfsSize`). The space check alone asks for 512 MiB of slack.\n\n**Fix:** the work dir is under `/var/lib/pifinder/delta-work` on the SD card. Leftovers from an interrupted run are removed at the start. If the dir cannot be created, the system temp dir is used as before.\n\nChecks: 56 unit tests pass (2 new). ruff and mypy pass.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 54,
+        "source_ref": "fix/delta-workdir",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "cc8938c65c89e297d738dba603550c36654eaaae",
+        "store_path": "/nix/store/g9lzcyr262hvrfs077yysd792s40bzvd-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(delta): build patches on the SD card, not in the 200 MiB /tmp",
+        "version": "PR#54-cc8938c"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T09:17:13+00:00",
         "kind": "pr",
         "label": "PR#53-af95eb1",
@@ -145,6 +159,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T09:17:13+00:00",
+  "generated_at": "2026-09-25T09:58:36+00:00",
   "schema": 1
 }
