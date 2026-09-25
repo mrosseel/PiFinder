@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T21:38:09+00:00",
+        "kind": "pr",
+        "label": "PR#62-f2cac47",
+        "notes": "**Fault (CM4 PiFinder v4, NixOS):** the app exits at start with `ModuleNotFoundError: No module named 'pkg_resources'` from Blinka's `board.py`, and the watchdog shows UPDATE FAILED. Found on a CM4 booting the btrfs spike image (#61); it is not btrfs-related and hits every CM4 on NixOS.\n\n**Cause:** Adafruit PlatformDetect uses the revision code (`/proc/cpuinfo` `Revision`, or `/proc/device-tree/system/linux,revision`). U-Boot loads the device tree from `/boot` (FDTDIR), so the firmware's `linux,revision` is missing, and 64-bit kernels show no `Revision`. The model-string fallback matches \"Raspberry Pi 4 Model B\" but not \"Raspberry Pi Compute Module 4\", so `board_id` is `None`; Blinka's error message path then needs `pkg_resources`.\n\n**Fix:** `PiFinder/blinka_board.py` sets `BLINKA_FORCEBOARD` from `/proc/device-tree/model` for a Compute Module (CM4, CM4S, CM5, CM5 Lite), called in `i2c_bus.py` before `import board`. Only when no revision code exists and the variable is not set, so a Pi 4 and Raspbian are unchanged.\n\n**Checks**\n- 11 unit tests (`test_blinka_board.py`). ruff and mypy pass.\n- On aarch64 (pi5) with the image's `pifinder-env` and a CM4 device-tree view (model, compatible, no revision): `import board` fails exactly as on the device; with the fix, `BLINKA_FORCEBOARD=RASPBERRY_PI_CM4` and `board` loads with its pins.\n\nFollow-up option: U-Boot copies `linux,revision` from the firmware device tree, so every tool that reads it works.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 62,
+        "source_ref": "fix/cm4-blinka-board",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "f2cac47775e48f146da87896348d0698febf4a35",
+        "store_path": "/nix/store/2inbcwyf899fw48wq8rhwn0i1wg3vccd-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(hardware): identify a Compute Module for Blinka when the revision code is missing",
+        "version": "PR#62-f2cac47"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T17:29:30+00:00",
         "kind": "pr",
         "label": "PR#59-0c852f3",
@@ -229,6 +243,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T17:29:30+00:00",
+  "generated_at": "2026-09-25T21:38:10+00:00",
   "schema": 1
 }
