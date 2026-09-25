@@ -12,3 +12,4 @@ Architecture-decision records for the **NixOS** context (NixOS build, binary cac
 - [0006 — Recovery mode is the update screen in isolation, with a blind-rollback fallback — not a separate minimal tool](./0006-recovery-mode-reuses-update-screen.md)
 - [0007 — extlinux and kernels live on the ext4 root; the FAT partition is firmware-only](./0007-boot-on-ext4-fat-firmware-only.md)
 - [0008 — The imx462 camera gets an explicit 74.25 MHz xclk overlay because fdtoverlay drops overlay parameters (proposed)](./0008-imx462-xclk-override.md)
+- [0009 — The root partition moves from ext4 to btrfs with zstd compression, after a boot spike passes (proposed)](./0009-btrfs-root-filesystem.md)
