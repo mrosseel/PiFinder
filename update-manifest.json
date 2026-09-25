@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T22:42:43+00:00",
+        "kind": "pr",
+        "label": "PR#64-7b1aca7",
+        "notes": "The early boot splash (`nixos/pkgs/boot-splash.c`) centred the 128\u00d7128 welcome image on the 176\u00d7176 SSD1333 panel of a v4, which left a 24-pixel black border. The app's splash (`splash.py`) scales the image to the full panel, so the two looked different.\n\n- `nixos/pkgs/gen-welcome-image.py` generates the headers from `images/welcome.png`, scaled like `splash.py` does it. It reproduces the existing 128\u00d7128 header byte for byte and adds `welcome_image_176.h`.\n- On the SSD1333 the boot splash copies the 176\u00d7176 image full-screen. The SSD1351 (rev 3) is unchanged. The panel detection (device-tree model) was already right.\n\nChecks: `--check` mode confirms both headers match the generator; `boot-splash` builds for aarch64; the 176\u00d7176 header decodes to the full welcome image. Not yet seen on a device.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 64,
+        "source_ref": "fix/boot-splash-176",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "7b1aca7909a9a30622979488d54ed5b6873440c2",
+        "store_path": "/nix/store/vchl6g6xnf9la7i141cdcsmx2j4wsjvr-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "fix(nixos): boot splash fills the v4 panel with a 176x176 image",
+        "version": "PR#64-7b1aca7"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T22:13:09+00:00",
         "kind": "pr",
         "label": "PR#63-9533912",
@@ -257,6 +271,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T22:13:10+00:00",
+  "generated_at": "2026-09-25T22:42:44+00:00",
   "schema": 1
 }
