@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T03:17:09+00:00",
+        "kind": "pr",
+        "label": "PR#49-72a810a",
+        "notes": "**Do not merge before a device test.**\n\nNixOS 25.11 reached end of life on 2026-06-30. 26.05 gets security fixes until about the end of 2026.\n\n**Changes**\n- `nixpkgs` follows `nixos-26.05`. `nixos-hardware` stays pinned, so the Raspberry Pi kernel (6.12.47) and the camera patches do not change.\n- `networking.wireless.enable = false` is removed. In 26.05 NetworkManager runs `wpa_supplicant` through the NixOS module in D-Bus mode and sets that option itself.\n- `boot.initrd.systemd.enable = false` keeps the scripted stage 1 from 25.11. 26.05 defaults to the systemd initrd. The scripted initrd is removed in 26.11, so that move is a separate change before 26.11.\n\n**Main version changes:** systemd 258.7 \u2192 260.4, NetworkManager 1.54.3 \u2192 1.56.0, libcamera 0.6.0 \u2192 0.7.0, Python 3.13.12 \u2192 3.13.15, OpenSSH 10.3p1 \u2192 10.5p1.\n\n**Device test list**\n- Boot on a Pi 4B and a CM4.\n- The camera works with each specialisation (imx462, imx296, imx477). libcamera 0.7 is the main risk for picamera2.\n- WiFi client mode and the AP fallback.\n- An upgrade from 25.11, and a rollback to it.\n- A migration from 2.6.3 with the new tarball.\n\nChecks: `pifinder`, `pifinder-fast`, `pifinder-netboot`, the SD image and the migration image evaluate locally.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 49,
+        "source_ref": "feat/nixos-26.05",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "72a810a823a6bdc1dc6e3436ec827e486194c8c8",
+        "store_path": "/nix/store/sa16qp2y7dls3ll7xhvxy3rawvv55a9x-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "feat(nixos): move nixpkgs to NixOS 26.05",
+        "version": "PR#49-72a810a"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T00:05:13+00:00",
         "kind": "pr",
         "label": "PR#48-7e2901b",
@@ -75,6 +89,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T00:05:14+00:00",
+  "generated_at": "2026-09-25T03:17:09+00:00",
   "schema": 1
 }
