@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T16:15:16+00:00",
+        "kind": "pr",
+        "label": "PR#57-73bd794",
+        "notes": "**Differ test on pifinder-mr (`147fe3b` \u2192 `56046f2`):** every patch was rebuilt correctly, but `nix copy` refused each one with `path '\u2026-dbus-1' is not valid`. A path can enter the store only after the paths it references, and the code imported in dry-run order. \"Preparing\u2026\" took about 75 s: a 26 s dry run and session, then 48 s for 40 paths one at a time.\n\n**Changes**\n- Patched NARs go into one local `file://` binary cache (`Priority: 10`), next to the signed narinfo. `nix build` gets it as an extra substituter, so Nix orders the paths, fetches references from the network, and checks the signature and hash of each staged path.\n- No per-path `nix copy`, no `nix-store --verify-path` on the base, no second dry run.\n- 3 paths are requested and rebuilt at a time.\n- New statuses `checking` (dry run) and `patching d/t`. The Software screen shows \"Checking...\" and \"Patching...\" with a bar and a path count, instead of \"Preparing...\".\n\n**Checks**\n- 1642 unit tests pass. ruff and mypy pass.\n- A real Nix test with a staged cache next to the real caches, into a test store, target `install-extlinux-conf.sh` (it references `bash` and `extlinux-conf-builder.sh`):\n  - good patch: Nix fetched the references from the network, then the target from the staged cache;\n  - wrong key: refused (\"not signed by any of the keys\");\n  - changed NAR: refused (\"hash mismatch\"), then downloaded from `cache.pifinder.eu`.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 57,
+        "source_ref": "feat/delta-staged-cache",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "73bd794d62b7323ece0b3b471fdb902ad3c992cb",
+        "store_path": "/nix/store/3zcs3v27sdlhdqa5p43zy2q6m6n6iqx6-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "feat(delta): stage patches for nix build, 3 at a time, and show the steps",
+        "version": "PR#57-73bd794"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T15:48:40+00:00",
         "kind": "pr",
         "label": "PR#56-df85455",
@@ -187,6 +201,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T15:48:41+00:00",
+  "generated_at": "2026-09-25T16:15:17+00:00",
   "schema": 1
 }
