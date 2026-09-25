@@ -1,0 +1,41 @@
+--- a/fs/btrfs/inode.c	2026-09-25 22:01:17.814113793 +0200
++++ b/fs/btrfs/inode.c	2026-09-25 22:01:17.834985791 +0200
+@@ -483,13 +483,23 @@
+ 		ret = -ENOMEM;
+ 		goto out;
+ 	}
+-	/* For compressed extent, we must read the whole on-disk extent */
++	/*
++	 * For compressed extent, we must read the whole on-disk extent.
++	 *
++	 * U-Boot does not verify data checksums, so a damaged copy is only
++	 * noticed when it fails to decompress. Try the next copy (e.g. DUP
++	 * profile) in that case too, not only on a device read error.
++	 */
+ 	for (i = 1; i <= num_copies; i++) {
+ 		read = csize;
+ 		ret = read_extent_data(fs_info, cbuf, disk_bytenr,
+ 				       &read, i);
+ 		if (ret < 0 || read != csize)
+ 			continue;
++		ret = btrfs_decompress(btrfs_file_extent_compression(leaf, fi),
++				       cbuf, csize, dbuf, dsize);
++		if (ret < 0)
++			continue;
+ 		finished = true;
+ 		break;
+ 	}
+@@ -497,13 +507,6 @@
+ 		ret = -EIO;
+ 		goto out;
+ 	}
+-
+-	ret = btrfs_decompress(btrfs_file_extent_compression(leaf, fi), cbuf,
+-			       csize, dbuf, dsize);
+-	if (ret < 0) {
+-		ret = -EIO;
+-		goto out;
+-	}
+ 	/*
+ 	 * The compressed part ends before sector boundary, the remaining needs
+ 	 * to be zeroed out.
