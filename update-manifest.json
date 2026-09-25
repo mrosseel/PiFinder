@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T08:53:11+00:00",
+        "kind": "pr",
+        "label": "PR#51-9dec226",
+        "notes": "The SD systems (`pifinder`, `pifinder-fast`) set `pifinder.deltaUrl = \"https://deltas.pifinder.eu\"`. Netboot keeps it off.\n\nThe upgrade then asks the differ for patches against paths the device already holds, and imports them only through Nix's signature check (#50). Any failure falls back to a normal download.\n\nThe server side is deployed: the differ runs as the atticd dynamic user with no capabilities, `/update-start` returns 200, and `/delta` refuses a target outside the session's closure (403).\n\n**How to test:** install this build once (a normal full download). The next upgrade from it to a later build uses deltas. The upgrade log shows \"delta prefetch imported N path(s)\".\n\nChecks: `pifinder` evaluates, and the upgrade unit gets `PIFINDER_DELTA_URL`.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 51,
+        "source_ref": "feat/delta-url",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "9dec226d543bbc47a3f14692b3b6a91e5a79c417",
+        "store_path": "/nix/store/wvh5q3408ybpyni3jidd5gxcz65qc4pp-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "feat(nixos): switch on delta prefetch for upgrades",
+        "version": "PR#51-9dec226"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T08:15:30+00:00",
         "kind": "pr",
         "label": "PR#50-f14d064",
@@ -103,6 +117,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T08:15:31+00:00",
+  "generated_at": "2026-09-25T08:53:12+00:00",
   "schema": 1
 }
