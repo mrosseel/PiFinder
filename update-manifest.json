@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-25T00:05:13+00:00",
+        "kind": "pr",
+        "label": "PR#48-7e2901b",
+        "notes": "NixOS side of brickbots/PiFinder#657. Stacked on #47, because both change the first-boot script.\n\nThe migration init writes `/var/lib/pifinder/camera-type` from the Pi OS `config.txt`. First boot now reads it and does the same as the upgrade's `activate_system`:\n- If the camera has a specialisation (imx296, imx477), first boot activates that specialisation.\n- Then `set-extlinux-default` from the new system points the extlinux DEFAULT at the camera's entry.\n\nWithout the file, the full system boots its base camera (imx462), as before.\n\nThe fix is in the minimal migration image, so it needs a new tarball, that is, a new beta.\n\nChecks: the migration image and the system evaluate, and the first-boot script passes `bash -n`. It is not tested on a device.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 48,
+        "source_ref": "fix/first-boot-camera",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "7e2901b3a8e7d1870ed88ffee3fdbe2eff1b2e6b",
+        "store_path": "/nix/store/3258vw6hlxhmd381bhri7xv5ryc0vixg-nixos-system-pifinder-25.11.20260630.b6018f8",
+        "title": "fix(nixos): first boot boots the camera from before the migration",
+        "version": "PR#48-7e2901b"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-24T23:54:17+00:00",
         "kind": "pr",
         "label": "PR#47-f1aafb0",
@@ -61,6 +75,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-24T23:54:18+00:00",
+  "generated_at": "2026-09-25T00:05:14+00:00",
   "schema": 1
 }
