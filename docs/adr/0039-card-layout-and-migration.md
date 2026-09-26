@@ -23,7 +23,7 @@ The root is mounted as `/dev/mmcblk0p2`, not by label. The SD card and the eMMC 
 
 The migration moves a Raspbian PiFinder to NixOS once. A Raspbian card runs ext4 and stays on 2.6.4 until it migrates. So no NixOS system needs ext4.
 
-1. **Trigger:** the Software screen offers the migration when the gate `nixos_for_everyone` in `migration_gate.json` on the upstream `release` branch is true. Pressing square 7 times offers it without the gate.
+1. **Trigger:** the Software screen offers the migration when the flag `nixos_migration` in `migration_gate.json` on the upstream `release` branch is true. Pressing square 7 times offers it without the gate. Pi OS up to 2.6.3 reads only the old flag `nixos_for_everyone`, which stays false, so such a Pi must update to a version with the btrfs migration first.
 2. **Prepare (Raspbian):** download the migration tarball of the chosen release, check its sha256, build a migration initramfs on the boot partition, add it to `config.txt`, and reboot.
 3. **Convert (initramfs):** `btrfs-convert` changes partition 2 from ext4 to btrfs in place, so the files stay, `PiFinder_data/catalog_images` included. The initramfs then:
    - creates the `PiFinder_data` subvolume and reflink-copies the kept data into it;
