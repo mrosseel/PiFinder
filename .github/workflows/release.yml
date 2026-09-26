@@ -100,18 +100,18 @@ jobs:
           path: result-sd/sd-image/*.img.zst
           retention-days: 1
 
-      # The migration tarball is cut from the MINIMAL migration system, not the
-      # full image — it resolves the full system from the update manifest at
-      # first boot (ADR 0004 / 0003).
-      - name: Build migration image
+      # The migration tarball holds the MINIMAL migration system, built
+      # straight from its closure. It resolves the full system from the update
+      # manifest at first boot (ADR 0039).
+      - name: Build migration tarball
         run: |
-          nix build .#images.pifinder-migration -L -o result-mig
+          nix build .#packages.aarch64-linux.migration-tarball -L -o result-mig
 
       - name: Upload migration image
         uses: actions/upload-artifact@v4
         with:
           name: migimage-native
-          path: result-mig/sd-image/*.img.zst
+          path: result-mig/pifinder-migration.tar.zst
           retention-days: 1
 
   # Primary: free GitHub-hosted arm64 runner (native aarch64, no QEMU). Attic
@@ -173,16 +173,16 @@ jobs:
           path: result-sd/sd-image/*.img.zst
           retention-days: 1
 
-      # Minimal migration system — see the native job's comment (ADR 0004).
-      - name: Build migration image
+      # Minimal migration system — see the native job's comment (ADR 0039).
+      - name: Build migration tarball
         run: |
-          nix build .#images.pifinder-migration -L -o result-mig
+          nix build .#packages.aarch64-linux.migration-tarball -L -o result-mig
 
       - name: Upload migration image
         uses: actions/upload-artifact@v4
         with:
           name: migimage-hosted
-          path: result-mig/sd-image/*.img.zst
+          path: result-mig/pifinder-migration.tar.zst
           retention-days: 1
 
   # Arch-independent: package the migration tarball + checksums and publish. Runs
@@ -248,7 +248,7 @@ jobs:
           # artifacts (listed first); fall back to native (Pi5).
           mkdir -p img-native img-hosted mig-native mig-hosted
           IMAGE_SRC=$(find img-hosted img-native -type f -name '*.img.zst' -print -quit)
-          MIG_SRC=$(find mig-hosted mig-native -type f -name '*.img.zst' -print -quit)
+          MIG_SRC=$(find mig-hosted mig-native -type f -name '*.tar.zst' -print -quit)
           if [ -z "$IMAGE_SRC" ] || [ -z "$MIG_SRC" ]; then
             echo "Missing artifact: sd=[$IMAGE_SRC] migration=[$MIG_SRC]" >&2
             exit 1
@@ -256,33 +256,13 @@ jobs:
           mkdir -p release
           cp "$IMAGE_SRC" "release/pifinder-${TAG}.img.zst"
 
-          # The migration tarball is cut from the MINIMAL migration image — it
-          # resolves the full system from the update manifest at first boot, so
-          # its content never goes stale (ADR 0004 / 0003).
-          rm -f /tmp/pifinder-mig.img
-          zstd -d "$MIG_SRC" -o /tmp/pifinder-mig.img
+          # The migration tarball is built by Nix from the minimal migration
+          # system's closure (ADR 0039); publish it as is.
+          cp "$MIG_SRC" "release/pifinder-migration-${TAG}.tar.zst"
 
-          LOOP=$(sudo losetup --find --show --partscan /tmp/pifinder-mig.img)
-          sudo mkdir -p /mnt/boot /mnt/root
-          sudo mount "${LOOP}p1" /mnt/boot
-          sudo mount "${LOOP}p2" /mnt/root
-
-          mkdir -p /tmp/tarball-staging
-          sudo cp -a /mnt/boot /tmp/tarball-staging/boot
-          sudo cp -a /mnt/root /tmp/tarball-staging/rootfs
-
-          sudo umount /mnt/boot /mnt/root
-          sudo losetup -d "$LOOP"
-          rm -f /tmp/pifinder-mig.img
-
-          sudo tar -C /tmp/tarball-staging -cf - \
-            --exclude='*/lost+found' \
-            boot rootfs | zstd -T0 -19 -o "release/pifinder-migration-${TAG}.tar.zst"
-          sudo rm -rf /tmp/tarball-staging
-
-          # Never-again guard (2026-07-05 field failure): during migration the
-          # tarball is copied into RAM, so a 2GB board can only hold ~1.4GB.
-          # Refuse to publish a release that cannot migrate 2GB boards.
+          # Size guard. The btrfs migration reads the tarball from the card, not
+          # from RAM, but the download still happens over the user's WiFi, and
+          # the budget keeps the minimal system minimal.
           MIG_MB=$(( $(stat -c%s "release/pifinder-migration-${TAG}.tar.zst") / 1048576 ))
           BUDGET_MB=800
           echo "migration tarball: ${MIG_MB}MB (budget ${BUDGET_MB}MB)"

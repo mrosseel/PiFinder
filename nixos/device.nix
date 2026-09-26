@@ -24,7 +24,7 @@ in {
     # hold the whole tarball in RAM during migration)
     nano
     htop
-    e2fsprogs
+    btrfs-progs
     dosfstools
     parted
     file
@@ -95,10 +95,11 @@ in {
     memoryPercent = 50;
   };
 
+  # The migration converts the root to btrfs on partition 2 (ADR 0039).
   fileSystems."/" = lib.mkDefault {
-    device = "/dev/disk/by-label/NIXOS_SD";
-    fsType = "ext4";
-    options = [ "noatime" "nodiratime" ];
+    device = "/dev/mmcblk0p2";
+    fsType = "btrfs";
+    options = [ "compress=zstd:1" "noatime" ];
   };
 
   # ---------------------------------------------------------------------------
@@ -242,11 +243,30 @@ in {
       echo 100 > "$PROGRESS_FILE"
 
       # A system that cannot mount this card's root stops in the initrd,
-      # before anything can roll it back. Refuse it and stay on the
-      # migration system; the service tries again at the next boot.
+      # before anything can roll it back. If the manifest's pick is such a
+      # system (an older build from before the btrfs root), use the baked-in
+      # target, which is built for this migration. If that fails too, stay
+      # on the migration system; the service tries again at the next boot.
       if ! ${check-root-mountable}/bin/check-root-mountable "$STORE_PATH"; then
-        echo "ERROR: not switching to $STORE_PATH"
-        exit 1
+        BAKED=""
+        [ -f /var/lib/pifinder/first-boot-target ] && BAKED=$(cat /var/lib/pifinder/first-boot-target)
+        if [ -z "$BAKED" ] || [ "$BAKED" = "$STORE_PATH" ]; then
+          echo "ERROR: not switching to $STORE_PATH"
+          exit 1
+        fi
+        echo "Falling back to the baked-in target $BAKED"
+        STORE_PATH=$BAKED
+        MANIFEST_JSON=""
+        for attempt in 1 2 3; do
+          download && break
+          echo "Download failed (attempt $attempt/3)"
+          [ "$attempt" -eq 3 ] && exit 1
+          sleep 60
+        done
+        if ! ${check-root-mountable}/bin/check-root-mountable "$STORE_PATH"; then
+          echo "ERROR: not switching to $STORE_PATH"
+          exit 1
+        fi
       fi
 
       echo "Setting system profile..."
