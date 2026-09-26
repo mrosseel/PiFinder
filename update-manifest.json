@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-26T07:05:03+00:00",
+        "kind": "pr",
+        "label": "PR#66-2c0615f",
+        "notes": "On a CM4 from a cold start, the app reached the event loop after 31.8 to 37.9 s. With this change it takes 17.5 to 18.8 s.\n\nFour commits:\n- **Heavy modules off the startup path.** `lazy_import.lazy_module()` loads a module on first use. `lazy_function()` lets each child process load its own module (tetra3, grpc, flask). The UI modules preload in a thread after READY. The warm import of `PiFinder.main` goes from 9.1 s to 1.9 s.\n- **TimezoneFinder in a background thread.** It took 4.1 s in `SharedStateObj()`.\n- **Comet check and download in the background.** The HTTP HEAD request took 3.5 s at startup. The download blocked the startup when the file was old.\n- **Catalog cache split.** Startup loads only M, NGC and IC. The other catalogs load in the background from 1000-object chunks, so the UI thread keeps running. `CACHE_VERSION` goes to 3, so the first start after the update builds the cache again from the database.\n\nThe other catalogs (WDS and more) are complete about 17 s after the UI starts.\n\nTests: mypy, ruff, and 1679 smoke and unit tests pass, with 7 new tests. Integration tests pass, except `test_optics_solving.py`, which the tetra3 test PR fixes.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 66,
+        "source_ref": "perf/startup-time",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "2c0615fc4c8a792da63824a04f0510049a6d0fd4",
+        "store_path": "/nix/store/z12xx9sp2nskzj8a2ggqk94ywz1qifpa-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "perf: cut the PiFinder start time by about half",
+        "version": "PR#66-2c0615f"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-25T22:42:43+00:00",
         "kind": "pr",
         "label": "PR#64-7b1aca7",
@@ -271,6 +285,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-25T22:42:44+00:00",
+  "generated_at": "2026-09-26T07:05:04+00:00",
   "schema": 1
 }
