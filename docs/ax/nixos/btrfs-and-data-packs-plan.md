@@ -43,7 +43,7 @@ Needs A1 to A6 and a spare Pi. Nothing opens the gate before this passes.
 
 **A9. Snapshot of user data before an upgrade.** `nixos_upgrade.py` takes a read-only snapshot of `PiFinder_data` before it switches, and keeps the last two. The restore path (a watchdog step or a manual step) is decided in this PR. Needs A4 or A6 (the subvolume). Check: unit tests; an upgrade on a btrfs card.
 
-**A10. U-Boot bootcount (ADR 0038 gap).** `bootcount` with `altbootcmd` in `ubootSD`. The watchdog's confirm step resets the counter. Needs A2. Check: install a build that stops in the initrd on a test card, and see that the third boot starts the previous entry.
+**A10. U-Boot bootcount (ADR 0038 gap).** Built: `BOOTCOUNT_FS` with a file on the FAT partition, `altbootcmd` with the previous generation's entry, reset by the watchdog, and `pifinder-uboot-update` for devices that have an older U-Boot. Needs A2. Check: install a build that stops in the initrd on a test card, and see that the fourth boot starts the previous entry.
 
 ## Part B: data packs
 
