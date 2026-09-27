@@ -97,6 +97,10 @@ cleanup() {
   for m in "$MNT"/chroot/boot "$MNT"/chroot "$MNT"/boot "$MNT"/root; do
     mountpoint -q "$m" 2>/dev/null && sudo umount "$m"
   done
+  # QEMU reads the card file next. Without a sync it can read the FAT before
+  # the last writes of the unmount (seen: "Volume was not properly
+  # unmounted" and a missing migration flag).
+  sync
   for l in "${LOOPS[@]:-}"; do [ -n "$l" ] && sudo losetup -d "$l" 2>/dev/null; done
   LOOPS=()
 }
