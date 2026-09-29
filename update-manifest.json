@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-29T16:49:52+00:00",
+        "kind": "pr",
+        "label": "PR#107-ca660a7",
+        "notes": "## Summary\n\nThe menu on the CM4 (rev4, 1.91\" SSD1333 176x176 panel) stutters when you scroll.\n\nThe luma `color_device.display` packs each pixel to 5-6-5 RGB in a Python loop. On a CM4 this takes 58 ms for a full 176x176 frame. The main loop has a 33 ms frame budget (30 fps).\n\n`ssd1333.display` now packs each changed area with numpy. The bytes it sends are the same as before. Rotation, the gray scale ceiling and the diff framebuffer work as before.\n\nMeasured on the CM4 (pifinder.local), one full frame:\n\n| | luma loop | numpy |\n|---|---|---|\n| 128x128 | 32.3 ms | 1.0 ms |\n| 176x176 | 58.4 ms | 1.6 ms |\n\n## Tests\n\n- New `tests/test_ssd1333_display.py` compares the sent bytes with luma's own loop: full frames, rotation 0 and 3, diffed frames, and four gray scale ceilings.\n- A reversed byte order on purpose makes 8 tests fail.\n- Ruff and mypy pass.\n- Not yet run on the real panel.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 107,
+        "source_ref": "perf/ssd1333-numpy",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "ca660a7a570c448d73de9588aeba4c225282589a",
+        "store_path": "/nix/store/ha2m984686srrdp1paj9jwmmvyc049wy-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "perf(display): pack SSD1333 frames with numpy",
+        "version": "PR#107-ca660a7"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-26T07:05:03+00:00",
         "kind": "pr",
         "label": "PR#66-2c0615f",
@@ -285,6 +299,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-26T07:05:04+00:00",
+  "generated_at": "2026-09-29T16:49:52+00:00",
   "schema": 1
 }
