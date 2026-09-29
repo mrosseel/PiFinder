@@ -5,6 +5,20 @@
     "unstable": [
       {
         "available": true,
+        "built_at": "2026-09-29T17:03:18+00:00",
+        "kind": "pr",
+        "label": "PR#108-2a4b3f7",
+        "notes": "## Summary\n\nThe FPS counter in the title bar was only available with the `-f` command-line flag. The NixOS service starts PiFinder with no arguments, so a device could not show it.\n\n- **Tools > Experimental > Dev Tools > Show FPS** (Off / On) saves the new `show_fps` config option. A post callback sets `UIState.show_fps` at once, so no restart is necessary.\n- At startup, `main.py` turns the counter on when `-f` is given or `show_fps` is true.\n- `default_config.json` gets `\"show_fps\": false`.\n\n## Tests\n\n- Ruff, mypy, and 1821 smoke and unit tests pass.\n- Headless run (176x176): the item is in Dev Tools. Selecting On shows `29` in the title bar. Selecting Off saves `\"show_fps\": false`.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+        "number": 108,
+        "source_ref": "feat/show-fps-menu",
+        "source_repo": "mrosseel/PiFinder",
+        "source_sha": "2a4b3f7869a8cd294ac17c8ff306a6c555bfc168",
+        "store_path": "/nix/store/d31qpa5vrx8wffy8k8fqcs7y95g7di41-nixos-system-pifinder-26.05.20260924.c508844",
+        "title": "feat(ui): Show FPS option in Dev Tools",
+        "version": "PR#108-2a4b3f7"
+      },
+      {
+        "available": true,
         "built_at": "2026-09-29T16:49:52+00:00",
         "kind": "pr",
         "label": "PR#107-ca660a7",
@@ -299,6 +313,6 @@
       }
     ]
   },
-  "generated_at": "2026-09-29T16:49:52+00:00",
+  "generated_at": "2026-09-29T17:03:19+00:00",
   "schema": 1
 }
