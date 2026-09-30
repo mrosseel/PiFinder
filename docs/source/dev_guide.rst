@@ -612,10 +612,11 @@ Start it with one command from the root of your checkout:
 
 .. code-block::
 
-    python/scripts/demo.sh
+    python/scripts/record_demo.sh
 
-The script starts PiFinder with ``-fh --camera debug --keyboard local
---display pg_demo``. Any other options pass through. Use
+The script shows its options and the keys, then starts PiFinder with
+``-fh --camera debug --keyboard local --display pg_demo``. Run it with
+``-h`` to see only the options. Any other options pass through. Use
 ``--display pg_demo_176`` for the 176x176 rev4 screen layout.
 
 You can operate the PiFinder in two ways:
@@ -628,11 +629,13 @@ You can operate the PiFinder in two ways:
 To record a video, add ``--record``. PiFinder writes the window to an MP4
 file at 30 frames per second. Add ``--record-audio`` to record your voice
 from the default microphone at the same time. The recording starts when the
-main menu shows and ends when you stop PiFinder with "Ctrl + C".
+main menu shows. It ends when you press "Ctrl + C" or close the window. The
+MP4 file is complete when the prompt comes back. A relative file name is
+relative to the folder you start the script in.
 
 .. code-block::
 
-    python/scripts/demo.sh --record demo.mp4 --record-audio
+    python/scripts/record_demo.sh --record demo.mp4 --record-audio
 
 For a video you can record again with the same key presses, write a key
 script and run it with ``--script``. The example ``scripts/demo_tour.pfs``
@@ -640,13 +643,14 @@ opens a Messier object and shows the marking menu:
 
 .. code-block::
 
-    python/scripts/demo.sh --script demo_tour --record demo_tour.mp4
+    python/scripts/record_demo.sh --script demo_tour --record demo_tour.mp4
 
 .. note::
 
    Recording needs ``ffmpeg`` on your ``PATH``. The Nix dev shell does not
    supply it, because few developers record videos. To add it for one
-   session, run ``nix shell nixpkgs#ffmpeg-headless``. The photo and the button positions are in ``images/demo_display/``.
+   session, run ``nix shell nixpkgs#ffmpeg-headless``. The photo and the
+   button positions are in ``images/demo_display/``.
    To move a button or the screen area, run
    ``python tools/demo_layout_editor.py`` from the ``python`` folder and drag
    the markers.
