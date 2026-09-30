@@ -22,12 +22,12 @@ The decisions behind this import are recorded in
 
 ## Catalogues
 
-**IV/24** — *Catalogue of Galactic Planetary Nebulae*, Kohoutek 2001
+**IV/24**: *Catalogue of Galactic Planetary Nebulae*, Kohoutek 2001
 (`2001A&A...378..843K`, Abh. Hamburger Sternw. XII). Explicitly "a
 continuation of CGPN(1967)", i.e. the direct successor to Perek & Kohoutek
 1967. This is the catalogue that assigns PK designations.
 
-**V/84** — *Strasbourg-ESO Catalogue of Galactic Planetary Nebulae*,
+**V/84**: *Strasbourg-ESO Catalogue of Galactic Planetary Nebulae*,
 Acker et al. 1992. Keyed on PN G rather than PK, but far richer in physical
 data. Joined to IV/24 on the PN G designation: 1112 of the 1510 PK rows
 match.
@@ -71,7 +71,7 @@ the coarse J2000 positions. They are useful as an independent check, and the
 spreadsheet was used as one: **all 1510 PK designations and all 1510 "other
 designation" values match `table2.dat` exactly.**
 
-The check also found one transcription error in the spreadsheet — row 551
+The check also found one transcription error in the spreadsheet: row 551
 (PK 342-02.1, He 2-198) lost its declination sign, reading `44°13'` where
 `table2.dat` reads `-44 13`. That row is 88 degrees out. It is another reason
 to take the VizieR original rather than either secondary copy.
@@ -84,7 +84,7 @@ to take the VizieR original rather than either secondary copy.
   existing NGC/IC/Abell object inherit that object's magnitude; the rest
   carry `UNKNOWN_MAG`.
 - **No morphological type.** Every entry is imported as `PN`.
-- **Diameters for 1112 of 1510 only** — the V/84 overlap.
+- **Diameters for 1112 of 1510 only**, the V/84 overlap.
 
 ## Designation formats
 

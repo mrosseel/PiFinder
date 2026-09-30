@@ -1,3 +1,4 @@
+import json
 import pytest
 from PiFinder.db import objects_db
 
@@ -102,11 +103,13 @@ def check_messier_objects():
     assert m45_obj is not None, "M45 object should exist in objects table"
 
     # Validate M45 coordinates (Pleiades)
-    # M45 is one sky object with two catalog listings, M 45 and Col 42, so the
-    # position is Collinder's: RA=56.75°, Dec=+24.117°.
+    # M45 and Col 42 share one sky object; post-processing sets the curated
+    # Pleiades values on it: RA=56.85°, Dec=+24.117°, mag 1.6, size 2°.
     assert coords_are_close(
-        m45_obj["ra"], 56.75
-    ), f"M45 RA should be ~56.75°, got {m45_obj['ra']}"
+        m45_obj["ra"], 56.85
+    ), f"M45 RA should be ~56.85°, got {m45_obj['ra']}"
+    assert json.loads(m45_obj["mag"])["mags"] == [1.6]
+    assert json.loads(m45_obj["size"])["e"] == [7200.0]
     assert coords_are_close(
         m45_obj["dec"], 24.117
     ), f"M45 Dec should be ~24.117°, got {m45_obj['dec']}"

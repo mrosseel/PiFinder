@@ -26,6 +26,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 from tqdm import tqdm
 
 import PiFinder.utils as utils
+from PiFinder.calc_utils import dms_to_dec, ra_to_deg
 from PiFinder.composite_object import MagnitudeObject, SizeObject
 from .catalog_import_utils import (
     ObjectFinder,
@@ -54,25 +55,34 @@ SIMBAD_PN_OTYPES = {"PN", "PN?"}
 # coarse position. table2 rounds to 0.1 minute of right ascension and 1
 # arcminute of declination, so honest disagreement stays under ~2 arcminutes.
 # Anything beyond this means a typo in the source or a SIMBAD identifier
-# resolving to the wrong object — IV/24 table4 carries at least one, an
-# equinox-2000 row for Vy 1-4 reading -02 26 where its five sibling rows and
+# resolving to the wrong object. IV/24 table4 carries at least one: an
+# equinox-2000 row for Vy 1-4 reads -02 26, where its five sibling rows and
 # SIMBAD all read -06 26.
 POSITION_AGREEMENT_ARCMIN = 5.0
+
+# A cross-link joins an entry to an existing sky object. It is accepted only
+# when that object lies within this distance of the entry's position. The
+# largest offset among the correct links is 17 arcminutes (large nebulae that
+# two catalogues centre differently); a wrong link is degrees away.
+LINK_AGREEMENT_ARCMIN = 30.0
+
+# Prefixes this source uses for PiFinder catalogs beyond the shared ones:
+# V/84 writes Abell planetaries as "A 50".
+SOURCE_ALIASES = {"a": "Abl"}
+
+# The PNG column of IV/24 table2 holds the Strasbourg-ESO (V/84) designation,
+# or one of these words for a nebula that has none.
+SECG_STATUS = {
+    "poss.": "Possible PN in the Strasbourg-ESO catalogue",
+    "rej.": "Rejected as a PN by the Strasbourg-ESO catalogue",
+    "--": "Not in the Strasbourg-ESO catalogue",
+}
 
 
 class Position(NamedTuple):
     ra: float
     dec: float
     source: str
-
-
-def _hms_to_deg(hours: float, minutes: float, seconds: float = 0.0) -> float:
-    return (hours + minutes / 60.0 + seconds / 3600.0) * 15.0
-
-
-def _dms_to_deg(sign: str, degrees: float, minutes: float, secs: float = 0.0) -> float:
-    magnitude = degrees + minutes / 60.0 + secs / 3600.0
-    return -magnitude if sign.strip() == "-" else magnitude
 
 
 def _field(line: str, start: int, end: int) -> str:
@@ -83,8 +93,8 @@ def _field(line: str, start: int, end: int) -> str:
 def _pk_key(raw: str) -> Optional[str]:
     """Canonical join key for a PK designation.
 
-    Each source spells it differently — "036+17.1" in IV/24, "036+17  1" in
-    SIMBAD, "171-25 1" in V/84 — so reduce them all to "036+17.1".
+    Each source spells it differently: "036+17.1" in IV/24, "036+17  1" in
+    SIMBAD, "171-25 1" in V/84. So reduce them all to "036+17.1".
     """
     text = trim_string(raw)
     if text.upper().startswith("PK "):
@@ -119,7 +129,7 @@ def _designation_aliases(raw: str) -> Tuple[List[str], List[str]]:
         return [], []
 
     linking: List[str] = []
-    parsed = parse_designation(name)
+    parsed = parse_designation(name, extra_aliases=SOURCE_ALIASES)
     if parsed is not None:
         catalog_code, sequence = parsed
         linking.append(f"{catalog_code} {sequence}")
@@ -165,7 +175,7 @@ def _ngc_pair(raw: str) -> List[str]:
 
 
 def _read_table2() -> List[Dict[str, str]]:
-    """IV/24/table2 — the authoritative 1510 rows, ordered by right ascension."""
+    """IV/24/table2: the authoritative 1510 rows, ordered by right ascension."""
     rows = []
     with open(DATA_DIR / "table2.dat", "r") as table2:
         for line in table2:
@@ -199,7 +209,7 @@ def angular_separation_arcmin(first: Position, second: Position) -> float:
 
 
 def _read_table4() -> Dict[str, List[Position]]:
-    """IV/24/table4 — arcsecond J2000 positions, several rows per nebula.
+    """IV/24/table4: arcsecond J2000 positions, several rows per nebula.
 
     The J2000 columns are author-computed from the row's own equinox, so any
     row is usable. Rows already given at equinox 2000 are listed first,
@@ -226,11 +236,11 @@ def _read_table4() -> Dict[str, List[Position]]:
                 continue
             try:
                 position = Position(
-                    _hms_to_deg(float(ra_h), float(ra_m), float(ra_s or 0)),
-                    _dms_to_deg(
+                    ra_to_deg(float(ra_h), float(ra_m), float(ra_s or 0)),
+                    dms_to_dec(
                         _field(line, 94, 94) or "+",
-                        float(de_d),
-                        float(de_m),
+                        int(de_d),
+                        int(de_m),
                         float(de_s or 0),
                     ),
                     "IV/24 table4",
@@ -262,7 +272,7 @@ def _read_v84_main() -> Dict[str, Dict[str, str]]:
 
 
 def _read_v84_diam() -> Dict[str, SizeObject]:
-    """V/84/diam — optical diameter preferred, radio diameter as fallback."""
+    """V/84/diam: optical diameter preferred, radio diameter as fallback."""
     sizes = {}
     with open(DATA_DIR / "diam.dat", "r") as diam:
         for line in diam:
@@ -321,15 +331,51 @@ def _choose_position(candidates: List[Position], anchor: Position) -> Position:
     return anchor
 
 
-def _build_description(png: str, v84: Optional[Dict[str, str]]) -> str:
+def _secg_designation(png: str) -> Optional[str]:
+    """The Strasbourg-ESO designation from the PNG column, or None when the
+    column holds a status word (see SECG_STATUS) or is empty."""
+    if not png or png in SECG_STATUS:
+        return None
+    return png
+
+
+def _build_description(png: str, f_pk: str, v84: Optional[Dict[str, str]]) -> str:
     parts = []
-    if png and png not in ("possible", "rejected"):
-        parts.append(f"PN G{png}")
-    elif png:
-        parts.append(f"Classified {png} in the Strasbourg-ESO catalogue")
+    designation = _secg_designation(png)
+    if designation:
+        parts.append(f"PN G{designation}")
+    elif png in SECG_STATUS:
+        parts.append(SECG_STATUS[png])
+    if f_pk == "*":
+        parts.append("Kohoutek lists it as a possible PN")
     if v84 and v84["idents"]:
-        parts.append(f"Also {v84['idents']}")
+        parts.append(f"Also {', '.join(_split_idents(v84['idents']))}")
     return ". ".join(parts)
+
+
+def _linked_object_id(
+    finder: ObjectFinder, names: List[str], position: Position
+) -> Optional[int]:
+    """The sky object the first resolvable name links to, when that object
+    lies within LINK_AGREEMENT_ARCMIN of ``position``. A name that resolves
+    to an object farther away is logged and skipped."""
+    assert objects_db is not None, "Database not initialized"
+    for name in names:
+        object_id = finder.get_object_id(name)
+        if object_id is None:
+            continue
+        row = objects_db.get_object_by_id(object_id)
+        target = Position(row["ra"], row["dec"], f"object {object_id}")
+        separation = angular_separation_arcmin(target, position)
+        if separation <= LINK_AGREEMENT_ARCMIN:
+            return object_id
+        logging.warning(
+            "Perek-Kohoutek: %r resolves to object %d, %.0f arcmin away; not linked",
+            name,
+            object_id,
+            separation,
+        )
+    return None
 
 
 def load_pk():
@@ -372,8 +418,8 @@ def load_pk():
                 )
 
             anchor = Position(
-                _hms_to_deg(float(row["ra_h"]), float(row["ra_m"])),
-                _dms_to_deg(row["de_sign"], float(row["de_d"]), float(row["de_m"])),
+                ra_to_deg(float(row["ra_h"]), float(row["ra_m"]), 0.0),
+                dms_to_dec(row["de_sign"], int(row["de_d"]), int(row["de_m"]), 0.0),
                 "IV/24 table2",
             )
             position_candidates = []
@@ -386,14 +432,19 @@ def load_pk():
             )
 
             png = row["png"]
-            v84 = v84_main.get(png)
+            designation = _secg_designation(png)
+            v84 = v84_main.get(designation) if designation else None
 
             # Linking aliases lead, because find_object_id() takes the first
             # match: a resolvable NGC/IC/Messier designation must win over a
             # name that merely looks like one.
             linking: List[str] = []
             plain: List[str] = []
-            alias_candidates = simbad_aliases.get(key, []) + [row["name"]]
+            # SIMBAD aliases only when SIMBAD also calls the object a PN: for
+            # another object type, its aliases can name a galaxy or a cluster.
+            alias_candidates = (
+                simbad_aliases.get(key, []) if key in simbad_positions else []
+            ) + [row["name"]]
             if v84:
                 alias_candidates.append(v84["name"])
                 alias_candidates.extend(_split_idents(v84["idents"]))
@@ -403,8 +454,8 @@ def load_pk():
                 plain.extend(candidate_plain)
 
             plain.extend(_pk_display_names(key))
-            if png and png not in ("possible", "rejected"):
-                plain.append(f"PN G{png}")
+            if designation:
+                plain.append(f"PN G{designation}")
             if v84 and v84["iras"]:
                 plain.append(f"IRAS {v84['iras']}")
 
@@ -419,11 +470,14 @@ def load_pk():
                 ra=position.ra,
                 dec=position.dec,
                 mag=MagnitudeObject([]),
-                size=v84_sizes.get(png, SizeObject([])),
+                size=v84_sizes.get(designation, SizeObject([])),
                 aka_names=aka_names,
-                description=_build_description(png, v84),
+                description=_build_description(png, row["f_pk"], v84),
             )
-            new_object.insert()
+            new_object.object_id = (
+                _linked_object_id(shared_finder, aka_names, position) or 0
+            )
+            new_object.insert(find_object_id=False)
     finally:
         NewCatalogObject.clear_shared_finder()
 

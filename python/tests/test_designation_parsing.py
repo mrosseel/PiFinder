@@ -1,10 +1,9 @@
 """Designation parsing for catalog imports.
 
-The regression these guard against: `ObjectFinder` used to resolve aliases by
-stripping spaces *and hyphens*, so any designation with a compound numeric
-part collapsed into a plausible but wrong sequence number. Feeding it the
-Perek-Kohoutek name column produced 147 matches, 145 of them false — 188 of
-those names are Minkowski planetary nebulae ("M 1-92"), not Messier objects.
+A designation with a compound numeric part ("M 1-92", a Minkowski planetary
+nebula) must not collapse into a different catalog entry (Messier 92). The
+Perek-Kohoutek name column has 188 Minkowski names, so a parser that drops
+the hyphen links 145 of them to the wrong object.
 """
 
 import pytest
@@ -23,7 +22,6 @@ from PiFinder.catalog_imports.catalog_import_utils import parse_designation
         ("M 27", ("M", 27)),
         ("M  76", ("M", 76)),
         ("Messier 31", ("M", 31)),
-        ("A 43", ("Abl", 43)),
         ("Abell 43", ("Abl", 43)),
         ("PN A66   80", ("Abl", 80)),
         ("Sh 2-176", ("Sh2", 176)),
@@ -33,10 +31,23 @@ from PiFinder.catalog_imports.catalog_import_utils import parse_designation
         ("Collinder 24", ("Col", 24)),
         ("Caldwell 14", ("C", 14)),
         ("Barnard 33", ("B", 33)),
+        ("Arp 244", ("Arp", 244)),
+        ("Lyn 12", ("Lyn", 12)),
+        ("Har 5", ("Har", 5)),
+        ("Ta2 21", ("Ta2", 21)),
     ],
 )
 def test_recognized_designations(designation, expected):
     assert parse_designation(designation) == expected
+
+
+@pytest.mark.unit
+def test_one_letter_prefixes_need_a_source_alias():
+    # "A 58" and "B 53" are the double stars of Aitken and van den Bos in
+    # double-star sources, so only a source that means Abell adds "a".
+    assert parse_designation("A 58") is None
+    assert parse_designation("B 53") is None
+    assert parse_designation("A 43", extra_aliases={"a": "Abl"}) == ("Abl", 43)
 
 
 @pytest.mark.unit
@@ -62,6 +73,9 @@ def test_recognized_designations(designation, expected):
         "Hu 1-2",
         "Wray 16-93",
         "IRAS 06518-1041",
+        # Designations that end in digits that are not a sequence.
+        "WDS 00001+7508",
+        "PK 120+09.1",
         # Nothing to key on.
         "40",
         "",

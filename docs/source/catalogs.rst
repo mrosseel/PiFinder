@@ -80,7 +80,7 @@ NGC 2000.0, The Complete New General Catalogue and Index Catalogue of Nebulae an
 
 PK
 ----
-The Perek-Kohoutek catalog of galactic planetary nebulae — 1,510 objects, from
+The Perek-Kohoutek catalog of galactic planetary nebulae: 1,510 objects, from
 Kohoutek's 2001 revision of the 1967 original.
 
 A PK designation encodes galactic position rather than brightness:
