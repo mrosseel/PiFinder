@@ -297,19 +297,39 @@ Install Nix with the instructions on the `Nix download page
 - **macOS**: use the macOS installation.
 - **NixOS**: Nix is already installed.
 
-The PiFinder dev shell is a Nix *flake*. Flakes are an optional Nix feature, so
-turn them on once:
+Then configure Nix once. The configuration does two things:
+
+- It turns on *flakes*. The PiFinder dev shell is a flake, and flakes are an
+  optional Nix feature.
+- It adds the PiFinder binary cache. CI builds the dev shell for Linux and puts
+  it in this cache, so Nix downloads the shell instead of compiling it.
+
+Add the settings to the system-wide Nix configuration file:
 
 .. code-block:: bash
 
-    mkdir -p ~/.config/nix
-    echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+    sudo mkdir -p /etc/nix
+    sudo tee -a /etc/nix/nix.conf <<'EOF'
+    experimental-features = nix-command flakes
+    extra-substituters = https://cache.pifinder.eu/pifinder
+    extra-trusted-public-keys = pifinder:8UU/O3oLkaJHHUyqEcPGl+9F1m4MqDca39Ewl49jBmE=
+    EOF
 
-On NixOS, add this line to your system configuration instead, then rebuild:
+Then restart the Nix daemon, so that it reads the new settings:
+
+- **Linux and WSL2**: ``sudo systemctl restart nix-daemon``. If you installed
+  Nix without a daemon, skip this step.
+- **macOS**: ``sudo launchctl kickstart -k system/org.nixos.nix-daemon``.
+
+On NixOS, add the settings to your system configuration instead, then rebuild:
 
 .. code-block:: nix
 
-    nix.settings.experimental-features = [ "nix-command" "flakes" ];
+    nix.settings = {
+      experimental-features = [ "nix-command" "flakes" ];
+      extra-substituters = [ "https://cache.pifinder.eu/pifinder" ];
+      extra-trusted-public-keys = [ "pifinder:8UU/O3oLkaJHHUyqEcPGl+9F1m4MqDca39Ewl49jBmE=" ];
+    };
 
 Step 2: Get the code
 ....................
@@ -363,10 +383,15 @@ repository root:
 
 Type ``exit`` to leave it.
 
-The first time you enter the dev shell takes a long time. Nix downloads the
-packages and compiles some of them from source, such as
-``cedar-detect-server``. After that, the shell loads from the Nix store in
-seconds.
+The first time you enter the dev shell, Nix downloads it from the binary cache.
+This can take some minutes. If you change ``flake.nix`` or the Python
+dependencies, the cache may not have your shell yet. Nix then compiles some
+packages from source, such as ``cedar-detect-server``, which takes longer.
+After the first time, the shell loads from the Nix store in seconds.
+
+.. note::
+   On macOS, the cache does not contain the dev shell, because CI builds it
+   only for Linux. The first entry compiles part of it.
 
 The dev shell puts these on your ``PATH``:
 
@@ -426,14 +451,13 @@ run them before you open a pull request.
 Linting and formatting
 ......................
 
-`Ruff <https://docs.astral.sh/ruff/>`_ handles both. CI uses Ruff 0.4.8. The
-dev shell has a newer Ruff, which can format some lines differently. To get the
-same result as CI, run the pinned version through ``uv``. From ``python/``:
+`Ruff <https://docs.astral.sh/ruff/>`_ handles both. The dev shell has the same
+Ruff version as CI, pinned in ``python/pyproject.toml``. From ``python/``:
 
 .. code-block::
 
-    uvx ruff@0.4.8 check .     # report common issues (add --fix to repair them)
-    uvx ruff@0.4.8 format .    # reformat code in the Black style
+    ruff check .     # report common issues (add --fix to repair them)
+    ruff format .    # reformat code in the Black style
 
 CI runs ``ruff check`` and ``ruff format --check`` and fails if either reports
 anything.
