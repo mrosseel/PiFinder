@@ -49,8 +49,10 @@ from PiFinder.multiproclogging import MultiprocLogging
 from PiFinder.catalogs import CatalogBuilder, CatalogFilter, Catalogs
 from PiFinder.calc_utils import sf_utils
 from PiFinder.state_utils import sleep_for_framerate
+from PiFinder.state_snapshot import SnapshotBlock, StateReader, attach_writer
 
 from PiFinder.ui.console import UIConsole
+from PiFinder.ui.base import CurrentSnapshot, UIModule
 from PiFinder.ui.menu_manager import MenuManager
 
 from PiFinder.state import SharedStateObj, UIState
@@ -180,6 +182,9 @@ def setup_dirs():
 
 patch.apply()
 
+# GIL switch interval for the UI process, in seconds (Python default 0.005).
+UI_SWITCH_INTERVAL = 0.001
+
 
 class StateManager(BaseManager):
     pass
@@ -198,6 +203,9 @@ class PowerManager:
         self.last_activity = time.time()
         self.sleep_start_time = None
         self.screen_off_start_time = None
+        # This class is the only writer of the shared power state, so it
+        # keeps the value itself and never reads it back.
+        self.power_state = 1
 
     def register_activity(self):
         """
@@ -210,7 +218,7 @@ class PowerManager:
         # -1 = Screen off
         #  0 = Sleep
         #  1 = Wake
-        if self.shared_state.power_state() < 1:
+        if self.power_state < 1:
             # wake up
             self.wake_up()
             return True
@@ -224,6 +232,7 @@ class PowerManager:
         self.last_activity = time.time()
         self.sleep_start_time = None
         self.screen_off_start_time = None
+        self.power_state = 1
         self.shared_state.set_power_state(1)
         self.wake_screen()
 
@@ -231,6 +240,7 @@ class PowerManager:
         """
         Do all the sleep things
         """
+        self.power_state = 0
         self.shared_state.set_power_state(0)
         self.sleep_start_time = time.time()
         self.sleep_screen()
@@ -248,14 +258,14 @@ class PowerManager:
             self.register_activity()
             return
 
-        if self.shared_state.power_state() > 0:
+        if self.power_state > 0:
             # We are awake, should we sleep?
             if time.time() - self.last_activity > self.get_sleep_timeout():
                 self.go_to_sleep()
 
-        elif self.shared_state.power_state() == 0:
+        elif self.power_state == 0:
             # We are asleep, should we wake up or go to screen off?
-            _imu = self.shared_state.imu()
+            _imu = UIModule.snapshot.imu()
             if _imu:
                 if _imu.moving:
                     self.wake_up()
@@ -271,8 +281,8 @@ class PowerManager:
                 self.screen_off()
 
         # Screen off mode: LED heartbeat, longer sleep
-        if self.shared_state.power_state() == -1:
-            _imu = self.shared_state.imu()
+        if self.power_state == -1:
+            _imu = UIModule.snapshot.imu()
             if _imu and _imu.moving:
                 self.wake_up()
                 return
@@ -281,7 +291,7 @@ class PowerManager:
             return
 
         # should we pause execution for a bit?
-        if self.shared_state.power_state() < 1:
+        if self.power_state < 1:
             time.sleep(0.2)
 
     def get_sleep_timeout(self):
@@ -325,6 +335,7 @@ class PowerManager:
 
     def screen_off(self):
         """Completely blank screen and turn off LEDs"""
+        self.power_state = -1
         self.shared_state.set_power_state(-1)
         self.screen_off_start_time = time.time()
         self.display_device.device.hide()
@@ -567,11 +578,20 @@ def main(
     )
     langXX.install()
 
-    with StateManager() as manager:
+    # The manager process writes the most-read shared state into a
+    # shared-memory snapshot, which the UI reads without a round trip to the
+    # manager (see state_snapshot).
+    snapshot_block = SnapshotBlock()
+    manager = StateManager()
+    manager.start(initializer=attach_writer, initargs=(snapshot_block.spec,))
+    with manager:
         shared_state = manager.SharedState()  # type: ignore[attr-defined]
+        state_reader = StateReader(snapshot_block.spec)
         location = shared_state.location()
         ui_state = manager.UIState()  # type: ignore[attr-defined]
+        show_fps = show_fps or cfg.get_option("show_fps", False)
         ui_state.set_show_fps(show_fps)
+        UIModule.frame_rate.visible = show_fps
         ui_state.set_hint_timeout(cfg.get_option("hint_timeout"))
         shared_state.set_ui_state(ui_state)
         shared_state.set_arch(arch)  # Normal
@@ -779,11 +799,19 @@ def main(
         # Start profiling (uncomment to enable performance analysis)
         # profiler, startup_profile_start = start_profiling()
 
-        # Initialize Catalogs (pass ui_queue for background loading completion signal)
-        catalogs: Catalogs = CatalogBuilder().build(shared_state, ui_queue)
+        # The UI thread waits for a shared-state answer many times per frame.
+        # After each wait it needs the GIL back, and a busy thread in this
+        # process (the catalog loader) keeps it for up to the switch
+        # interval. The 5 ms default cut the frame rate to a few FPS while
+        # catalogs loaded. All worker processes are already started, so this
+        # applies to the UI process only.
+        sys.setswitchinterval(UI_SWITCH_INTERVAL)
+
+        # Open the catalogs (numpy columns, see catalog_arrays)
+        catalogs: Catalogs = CatalogBuilder().build(shared_state)
 
         # Establish the common catalog filter object
-        _new_filter = CatalogFilter(shared_state=shared_state)
+        _new_filter = CatalogFilter(shared_state=CurrentSnapshot())
         _new_filter.load_from_config(cfg)
         catalogs.set_catalog_filter(_new_filter)
         console.write("   Menus")
@@ -872,7 +900,11 @@ def main(
                 except queue.Empty:
                     # Frame-rate-limit the main loop; sleep_for_framerate also
                     # handles power-save by sleeping longer when asleep.
-                    sleep_for_framerate(shared_state)
+                    sleep_for_framerate(UIModule.snapshot)
+
+                # One read of the shared state for this frame. Screens read
+                # it from UIModule.snapshot.
+                UIModule.snapshot = state_reader.read()
 
                 # GPS. The GPS process sends many messages a second, and each
                 # one applied is a round trip to the shared state: on a CM4
@@ -973,16 +1005,6 @@ def main(
                     menu_manager.jump_to_label("recent")
                 elif ui_command == "reload_config":
                     cfg.load_config()
-                elif ui_command == "catalogs_fully_loaded":
-                    logger.info(
-                        "All catalogs loaded - WDS and extended catalogs available"
-                    )
-                    # Mark the filter dirty so downstream consumers that cache
-                    # off dirty_time (e.g. the chart's nearby-DSO spatial index)
-                    # rebuild to include the newly available objects.
-                    if catalogs.catalog_filter is not None:
-                        catalogs.catalog_filter.mark_dirty()
-                    menu_manager.message(_("Catalogs\nFully Loaded"), 2)
                 elif ui_command == "test_mode":
                     # Toggle test mode (store in both shared_state and config).
                     # The camera process follows shared_state.test_mode()
@@ -1275,6 +1297,8 @@ def main(
                 sound_process.terminate()
                 sound_process.join()
 
+            state_reader.close()
+            snapshot_block.close()
             log_helper.join()
             exit()
 

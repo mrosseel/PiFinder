@@ -4,7 +4,7 @@ Retrieved 2026-08-15 by `fetch_sources.sh` (in this directory). The catalog
 build reads these files; it never touches the network.
 
 The decisions behind this import are recorded in
-[`docs/adr/0042-perek-kohoutek-catalog.md`](../../docs/adr/0042-perek-kohoutek-catalog.md).
+[`docs/adr/0045-perek-kohoutek-catalog.md`](../../docs/adr/0045-perek-kohoutek-catalog.md).
 
 ## Files
 

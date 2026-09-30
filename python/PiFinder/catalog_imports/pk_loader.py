@@ -14,7 +14,7 @@ Every position used here is J2000: SIMBAD is ICRS, and both IV/24 tables carry
 author-computed J2000 columns alongside their B1950 originals. The B1950
 columns are never read, so no precession happens in this loader.
 
-Design notes live in docs/adr/0042-perek-kohoutek-catalog.md.
+Design notes live in docs/adr/0045-perek-kohoutek-catalog.md.
 """
 
 import csv
