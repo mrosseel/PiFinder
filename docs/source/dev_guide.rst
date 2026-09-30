@@ -644,8 +644,9 @@ opens a Messier object and shows the marking menu:
 
 .. note::
 
-   Recording needs ``ffmpeg`` on your ``PATH``. The Nix dev shell supplies
-   it. The photo and the button positions are in ``images/demo_display/``.
+   Recording needs ``ffmpeg`` on your ``PATH``. The Nix dev shell does not
+   supply it, because few developers record videos. To add it for one
+   session, run ``nix shell nixpkgs#ffmpeg-headless``. The photo and the button positions are in ``images/demo_display/``.
    To move a button or the screen area, run
    ``python tools/demo_layout_editor.py`` from the ``python`` folder and drag
    the markers.

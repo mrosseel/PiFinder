@@ -162,7 +162,10 @@ class Recorder:
     ) -> "Recorder":
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
-            raise RuntimeError("Recording needs ffmpeg on the PATH")
+            raise RuntimeError(
+                "Recording needs ffmpeg on the PATH. On Nix, run PiFinder "
+                "in 'nix shell nixpkgs#ffmpeg-headless'."
+            )
         cmd = [ffmpeg, "-y", "-loglevel", "error"]
         cmd += ["-thread_queue_size", "64", "-f", "rawvideo", "-pix_fmt", "rgb24"]
         cmd += ["-s", f"{size[0]}x{size[1]}", "-r", str(FRAME_RATE), "-i", "-"]

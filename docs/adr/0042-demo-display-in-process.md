@@ -18,5 +18,6 @@ All of this runs in the main PiFinder process. `DemoDevice` is a luma device, so
 - `demo_display` imports pygame. `displays.py` imports it in a `try` block, because the Pi image has no pygame. On the Pi, `pg_demo` fails with a clear error.
 - The recording starts just before the main loop, after the last child process is forked. PiFinder forks its children, and a child forked after ffmpeg starts keeps the pipe open, so the file does not end. The boot screens are not in the video.
 - The recorder repeats a frame until the frame count agrees with the wall clock. The video length is the real time, so a sound track from `--record-audio` stays in step.
+- The Nix dev shell does not include ffmpeg. Its closure is about 1 GB (300 MB for `ffmpeg-headless`), and few developers record videos. The recorder stops with an error that names `nix shell nixpkgs#ffmpeg-headless`.
 - ffmpeg runs in its own session, so Ctrl+C in the terminal does not stop it before PiFinder closes the pipe.
 - The photo and the layout are in `images/demo_display/`. `python/tools/demo_layout_editor.py` edits the layout.

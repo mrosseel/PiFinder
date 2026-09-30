@@ -420,7 +420,6 @@
         pkgs.networkmanager
         pkgs.libcamera
         pkgs.gpsd
-        pkgs.ffmpeg # --record on the demo display
         cedar-detect
       ];
       shellHook = ''
@@ -500,7 +499,7 @@
       };
       cedar-detect = import ./nixos/pkgs/cedar-detect.nix { inherit pkgs; };
     in pkgs.mkShell {
-      packages = [ pyPkgs.devEnv pkgs.ruff pkgs.uv pkgs.ffmpeg cedar-detect ];
+      packages = [ pyPkgs.devEnv pkgs.ruff pkgs.uv cedar-detect ];
     };
   };
 }
