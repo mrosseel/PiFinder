@@ -579,7 +579,7 @@ class DisplayDemo(DisplayBase):
 
     Pressed buttons glow, a click on a button presses it, and --record
     writes the window to an MP4 file. For instruction videos. Select with
-    --display pg_demo. See docs/adr/0042-demo-display-in-process.md.
+    --display pg_demo. See docs/adr/0044-demo-display-in-process.md.
     """
 
     resolution = (128, 128)

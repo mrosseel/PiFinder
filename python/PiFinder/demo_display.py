@@ -8,7 +8,7 @@ videos with no screen recorder and no overlay tool.
 
 The photo and the button positions are in ``images/demo_display/``. Edit the
 positions with ``python/tools/demo_layout_editor.py``.
-See docs/adr/0042-demo-display-in-process.md.
+See docs/adr/0044-demo-display-in-process.md.
 """
 
 import json

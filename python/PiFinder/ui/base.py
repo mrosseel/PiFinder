@@ -17,6 +17,8 @@ from PiFinder.displays import DisplayBase
 from PiFinder.config import Config
 from PiFinder.ui.marking_menus import MarkingMenu
 from PiFinder.catalogs import Catalogs
+from PiFinder.state import initial_snapshot
+from PiFinder.state_snapshot import StateSnapshot
 from PiFinder.types.hardware import ChargeStatus
 from typing import Any, TYPE_CHECKING
 
@@ -41,6 +43,8 @@ class FrameRate:
 
     def __init__(self):
         self.fps = 0
+        # Show the rate in the title bar in place of the screen title.
+        self.visible = False
         self._count = 0
         self._window_start = time.monotonic()
 
@@ -58,25 +62,24 @@ class FrameRate:
 class RotatingInfoDisplay:
     """Alternates between constellation and SQM with cross-fade animation."""
 
-    def __init__(self, shared_state, interval=3.0, fade_speed=0.15):
-        self.shared_state = shared_state
+    def __init__(self, interval=3.0, fade_speed=0.15):
         self.interval = interval
         self.fade_speed = fade_speed
         self.show_sqm = False
         self.last_switch = time.time()
         self.progress = 1.0  # 1.0 = stable, <1.0 = transitioning
 
-    def _get_text(self, use_sqm):
+    @staticmethod
+    def _get_text(state, use_sqm):
         if use_sqm:
-            sqm = self.shared_state.sqm()
+            sqm = state.sqm()
             if sqm and sqm.last_update is not None:
                 return f"{sqm.value:.1f}"
             return "---"
-        else:
-            sol = self.shared_state.solution()
-            return sol.constellation if sol and sol.constellation else "---"
+        sol = state.solution()
+        return sol.constellation if sol and sol.constellation else "---"
 
-    def update(self):
+    def update(self, state):
         """Update state, returns (current_text, previous_text, progress)."""
         now = time.time()
         if now - self.last_switch >= self.interval:
@@ -86,14 +89,15 @@ class RotatingInfoDisplay:
         if self.progress < 1.0:
             self.progress = min(1.0, self.progress + self.fade_speed)
         return (
-            self._get_text(self.show_sqm),
-            self._get_text(not self.show_sqm),
+            self._get_text(state, self.show_sqm),
+            self._get_text(state, not self.show_sqm),
             self.progress,
         )
 
-    def draw(self, draw, x, y, font, colors, max_brightness=255, inverted=False):
-        """Draw with cross-fade animation. inverted=True for dark text on light bg."""
-        current, previous, progress = self.update()
+    def draw(self, state, draw, x, y, font, colors, max_brightness=255, inverted=False):
+        """Draw with cross-fade animation. inverted=True for dark text on light bg.
+        ``state`` is the frame's StateSnapshot."""
+        current, previous, progress = self.update(state)
         if progress < 1.0:
             fade_out = progress < 0.5
             t = progress * 2 if fade_out else (progress - 0.5) * 2
@@ -157,6 +161,14 @@ class UIModule:
     marking_menu: Union[None, MarkingMenu] = None
     # Counted by the menu manager for each frame it sends to the display.
     frame_rate = FrameRate()
+    # Time until which a message popup covers the screen. Only the UI
+    # process shows messages, so a class attribute replaces a shared-state
+    # read on every frame.
+    message_until = 0.0
+    # The shared state for the current frame. The main loop reads it once
+    # per frame (StateReader.read); screens read state from here and write
+    # it through self.shared_state setters.
+    snapshot: StateSnapshot = initial_snapshot()
 
     def __init__(
         self,
@@ -203,7 +215,7 @@ class UIModule:
         self.last_update_time = time.time()
 
         # Rotating info: alternates between constellation and SQM value
-        self._rotating_display = RotatingInfoDisplay(self.shared_state)
+        self._rotating_display = RotatingInfoDisplay()
 
     def active(self):
         """
@@ -360,9 +372,10 @@ class UIModule:
 
         # Update shared state so web interface shows the popup message
         if self.shared_state:
-            self.shared_state.set_screen(screen_to_display)
+            self.publish_screen(self.shared_state, screen_to_display)
 
-        self.ui_state.set_message_timeout(timeout + time.time())
+        UIModule.message_until = timeout + time.time()
+        self.ui_state.set_message_timeout(UIModule.message_until)
 
     def _battery_icon(self, battery) -> str:
         """Pick the title-bar battery glyph for a ``BatteryState``.
@@ -399,21 +412,37 @@ class UIModule:
             return self._BATT_80
         return self._BATT_FULL
 
+    # Bytes of the last frame sent to shared state (see publish_screen)
+    _published_frame: Union[None, bytes] = None
+
+    @classmethod
+    def publish_screen(cls, shared_state, image: Image.Image) -> None:
+        """
+        Sends a frame to shared state for the web API, only when it differs
+        from the last frame sent. Each send pickles the image and is a round
+        trip to the shared-state process. All UI code sends frames through
+        here, so the comparison always holds the frame the API serves.
+        """
+        frame = image.tobytes()
+        if frame != cls._published_frame:
+            shared_state.set_screen(image)
+            UIModule._published_frame = frame
+
     def _draw_battery_icon(self, fg) -> bool:
         """Draw the battery indicator to the left of the GPS/solver icons.
 
         Only rendered on battery-enabled hardware once a real reading exists;
-        ``shared_state.battery()`` is ``None`` both on non-battery boards and in
+        ``snapshot.battery()`` is ``None`` both on non-battery boards and in
         the brief window before the monitor's first sample, so we show nothing
         rather than a fake level.
 
         returns True if the battery indicator was drawn (has battery)
                 False if no battery hardware
         """
-        hardware = self.shared_state.hardware()
+        hardware = self.snapshot.hardware()
         if not (hardware and hardware.has_bq25895):
             return False
-        battery = self.shared_state.battery()
+        battery = self.snapshot.battery()
         if battery is None:
             return False
 
@@ -438,6 +467,7 @@ class UIModule:
     def _draw_titlebar_rotating_info(self, x, y, fg):
         """Draw rotating constellation/SQM in title bar (dark text on gray bg)."""
         self._rotating_display.draw(
+            self.snapshot,
             self.draw,
             x,
             y,
@@ -455,7 +485,7 @@ class UIModule:
         """
 
         # Don't redraw screen if message popup is active
-        if time.time() < self.ui_state.message_timeout():
+        if time.time() < UIModule.message_until:
             return None
 
         if title_bar:
@@ -471,7 +501,7 @@ class UIModule:
             title_y = max(0, (tb_height - self.fonts.bold.height) // 2)
             icon_y = (tb_height - self.fonts.icon_bold_large.height) // 2
             title_text = (
-                str(self.frame_rate.fps) if self.ui_state.show_fps() else _(self.title)
+                str(self.frame_rate.fps) if self.frame_rate.visible else _(self.title)
             )
             # Truncate so the title never runs under the right-side status icons.
             # They start at the GPS icon (~0.8*resX); leave a small gap. Derived
@@ -481,11 +511,11 @@ class UIModule:
             if len(title_text) > title_max_chars:
                 title_text = title_text[: title_max_chars - 1] + "…"
             self.draw.text((6, title_y), title_text, font=self.fonts.bold.font, fill=fg)
-            imu = self.shared_state.imu()
+            imu = self.snapshot.imu()
             moving = True if imu and imu.quat and imu.moving else False
 
             # GPS status
-            if self.shared_state.altaz_ready():
+            if self.snapshot.altaz_ready():
                 self._gps_brightness = 0
             else:
                 gps_anim = (
@@ -512,8 +542,8 @@ class UIModule:
                 self._unmoved = False
 
             if self.shared_state:
-                if self.shared_state.solve_state():
-                    solution = self.shared_state.solution()
+                if self.snapshot.solve_state():
+                    solution = self.snapshot.solution()
                     if solution is None:
                         return
                     cam_active = solution.is_camera_solve()
@@ -618,3 +648,15 @@ class UIModule:
         first press raises the confirmation and a second press confirms.
         """
         self.jump_to_label("shutdown")
+
+
+class CurrentSnapshot:
+    """
+    Reads like the shared-state proxy, from the snapshot of the current frame
+    (``UIModule.snapshot``). For UI-process objects that keep a state object
+    for their whole life and only read it, such as the catalog filter and
+    Nearby.
+    """
+
+    def __getattr__(self, name):
+        return getattr(UIModule.snapshot, name)
