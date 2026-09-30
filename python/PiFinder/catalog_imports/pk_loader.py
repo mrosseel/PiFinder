@@ -129,6 +129,25 @@ def _designation_aliases(raw: str) -> Tuple[List[str], List[str]]:
     return linking, [name]
 
 
+def _split_idents(field: str) -> List[str]:
+    """Split a V/84 cross-identification field on its commas.
+
+    The field lists one designation per comma, but one row writes
+    "NGC,6742": a token without a digit, then a token of only digits. Such
+    a pair is one designation, so it is joined again ("NGC 6742"). Tokens
+    without digits that stand alone, like the Blanco names "Bl G", stay.
+    """
+    idents: List[str] = []
+    for token in (t.strip() for t in field.split(",")):
+        if not token:
+            continue
+        if token.isdigit() and idents and not any(ch.isdigit() for ch in idents[-1]):
+            idents[-1] = f"{idents[-1]} {token}"
+        else:
+            idents.append(token)
+    return idents
+
+
 def _ngc_pair(raw: str) -> List[str]:
     """Expand a hyphenated NGC pair, e.g. "650-1" -> NGC 650 and NGC 651.
 
@@ -377,7 +396,7 @@ def load_pk():
             alias_candidates = simbad_aliases.get(key, []) + [row["name"]]
             if v84:
                 alias_candidates.append(v84["name"])
-                alias_candidates.extend(v84["idents"].split(","))
+                alias_candidates.extend(_split_idents(v84["idents"]))
             for candidate in alias_candidates:
                 candidate_linking, candidate_plain = _designation_aliases(candidate)
                 linking.extend(candidate_linking)
