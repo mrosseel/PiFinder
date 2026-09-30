@@ -553,6 +553,8 @@ are:
 - ssd1351 - This is the standard 1.5" OLED screen (DEFAULT)
 - pg_128 - PyGame emulated 128x128 display.  Use this for developing/testing
   PiFinder code on a laptop or desktop.
+- pg_demo, pg_demo_176 - The screen inside a photo of the PiFinder, for
+  demo videos. See :ref:`dev_guide:recording demo videos`.
 
 
 -c CAMERA, --camera CAMERA
@@ -597,6 +599,56 @@ be retired because the remote server is always started.
 .. code-block::
 
     python3 -m PiFinder.main -fh -k server --camera debug -x
+
+Recording demo videos
+.....................
+
+The demo display shows the screen inside a photo of the PiFinder. Each key
+you press makes its button glow in the photo. A red glow is a press, an
+orange glow is a press and hold, and a blue glow is a **SQUARE** chord. This
+makes the key presses easy to follow in an instruction video.
+
+Start it with one command from the root of your checkout:
+
+.. code-block::
+
+    python/scripts/demo.sh
+
+The script starts PiFinder with ``-fh --camera debug --keyboard local
+--display pg_demo``. Any other options pass through. Use
+``--display pg_demo_176`` for the 176x176 rev4 screen layout.
+
+You can operate the PiFinder in two ways:
+
+- Use the keyboard keys of the pygame display. See
+  :ref:`dev_guide:-k keyboard, --keyboard keyboard`.
+- Click a button in the photo. A right click is a press and hold. Hold
+  **Ctrl** and click to make a **SQUARE** chord.
+
+To record a video, add ``--record``. PiFinder writes the window to an MP4
+file at 30 frames per second. Add ``--record-audio`` to record your voice
+from the default microphone at the same time. The recording starts when the
+main menu shows and ends when you stop PiFinder with "Ctrl + C".
+
+.. code-block::
+
+    python/scripts/demo.sh --record demo.mp4 --record-audio
+
+For a video you can record again with the same key presses, write a key
+script and run it with ``--script``. The example ``scripts/demo_tour.pfs``
+opens a Messier object and shows the marking menu:
+
+.. code-block::
+
+    python/scripts/demo.sh --script demo_tour --record demo_tour.mp4
+
+.. note::
+
+   Recording needs ``ffmpeg`` on your ``PATH``. The Nix dev shell supplies
+   it. The photo and the button positions are in ``images/demo_display/``.
+   To move a button or the screen area, run
+   ``python tools/demo_layout_editor.py`` from the ``python`` folder and drag
+   the markers.
 
 
 Developing on the PiFinder itself
