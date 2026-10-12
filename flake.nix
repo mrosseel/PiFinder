@@ -412,7 +412,6 @@
       packages = [
         pyPkgs.devEnv
         pkgs.bashInteractive
-        pkgs.ruff
         pkgs.uv
         pkgs.git
         pkgs.rsync
@@ -499,7 +498,7 @@
       };
       cedar-detect = import ./nixos/pkgs/cedar-detect.nix { inherit pkgs; };
     in pkgs.mkShell {
-      packages = [ pyPkgs.devEnv pkgs.ruff pkgs.uv cedar-detect ];
+      packages = [ pyPkgs.devEnv pkgs.uv cedar-detect ];
     };
   };
 }
