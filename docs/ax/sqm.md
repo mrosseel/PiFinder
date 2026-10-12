@@ -66,6 +66,54 @@ These are in-sample results under a light-pollution-dominated Ghent sky. The
 factory constants include the local sky spectrum, so independent units and dark
 airglow-dominated sites remain required validation.
 
+### First independent dark-site unit
+
+Eight IMX462 sweeps from a 21.32–21.55 mag site, referenced against three
+hand-held SQM-L meters that agreed to ±0.1, are archived as
+`support/dumps/sweeps/markcasazza/`. They are the first genuinely dark data in
+the archive; everything before them stops at 21.1. They are not factory-fit
+eligible and do not enter the table above.
+
+They exposed a frame property the radiometer assumed rather than read: the
+frame extent, worth 0.211 mag, invisible on Ghent hardware because every
+earlier sweep is a crop. See
+[ADR 0022 §3](../adr/0022-sqm-measurement.md#3-frame-properties-are-read-from-the-frame-not-assumed).
+
+With the extent read, the unit measures **0.369 mag mean absolute error over the
+eight sweeps and −0.356 mag median** on the production path with the airglow
+floor, against 0.516 and −0.501 before. The factory path without the floor
+gives 0.591, against 0.762. Every cropped dataset in the archive is
+bit-identical. These numbers come from `python/scripts/report_sqm_production_archive.py`,
+which replays each frame through the device's own `update_radiometric_sqm`.
+
+**The remaining −0.36 mag is open.** Checked and ruled out:
+
+- the reported digital gain: the ISP applies it after the raw stream
+  ([§3.2](../adr/0022-sqm-measurement.md#32-scaling-the-analogue-gain-not-the-reported-digital-gain));
+- the pedestal
+  ([§4.3](../adr/0022-sqm-measurement.md#43-the-reported-black-level-is-not-a-third-source));
+- focal length, exposure and analogue gain: the solved field, the delivered
+  exposure and the delivered gain match the reference unit;
+- sky colour: R/G 1.00 to 1.05, inside the floor calibration;
+- dark current: 1.8 ADU/s on the reference unit at night, about 0.03 mag.
+
+The Milky Way explains the two worst sweeps, at galactic latitude −6° and −1°.
+Away from it the median is still −0.35.
+
+Two causes cannot be seen in the archive: the lens f-number or iris setting,
+and the direction the reference meters pointed. At a dark site the sky at the
+unit's 36° to 48° altitude is 0.2 to 0.3 mag brighter than at the zenith,
+mostly from airglow. The stellar zero point cannot separate the unit from the
+site, because it also measures the air above the site.
+
+They also discharge the black-level tracker's dark-site obligation. On the two
+clear sweeps the tracker returns 238.65 and 238.62 ADU where an independent fit
+of the same frames gives 238.78 and 238.73, agreeing to about 0.1 ADU on a sky
+where the pedestal error the tracker corrects is no longer swamped.
+
+Still outstanding: an independent dark site on the HQ and IMX296 profiles, and
+any dark site with the airglow floor's own calibration fitted out of sample.
+
 ## Runtime ownership and data flow
 
 The solver process owns the steady-state measurement. The UI only reads the
@@ -225,8 +273,8 @@ dark current from sky, because both are linear in exposure. Until a confident
 fit exists, `pedestal()` returns `None` and the caller falls back to the
 profile constant. Trust is a lease rather than a latch: an accepted fit expires
 after `max_age_seconds` and must be re-earned. See
-[ADR 0028](../adr/0028-tracked-black-level-supersedes-stored-bias.md) for the
-decision and its gates.
+[ADR 0022 §4.2](../adr/0022-sqm-measurement.md#42-the-tracked-black-level-supersedes-any-stored-bias)
+for the decision and its gates.
 
 Read noise is zero-mean RMS uncertainty and is never subtracted as signal.
 `NoiseFloorEstimator` retains a low image percentile only as a diagnostic;
@@ -266,7 +314,9 @@ sensors that mapping is not a constant: the radiometer measures sky in the
 sensor's passband while the reference meter measures V, and converting between
 them depends on the sky's spectrum. Sky colour measures that directly and is
 already in the frame, so the zero point is keyed to the measured red/green
-ratio of the sky background. See ADR 0026 for the derivation and the evidence.
+ratio of the sky background. See
+[ADR 0022 §5](../adr/0022-sqm-measurement.md#5-the-zero-point-is-keyed-to-measured-sky-colour)
+for the derivation and the evidence.
 
 `radiometric_colour_slope = 0` makes this a plain constant, which is the case
 for mono sensors (no colour to measure) and for the IR-cut HQ (no NIR leak to
@@ -364,9 +414,8 @@ was measured with no calibration file present.
 - Flats can characterize vignetting for research, but normal operation must
   remain accurate without asking the user to take one.
 
-See [`sqm/CONTEXT.md`](./sqm/CONTEXT.md) for canonical terminology,
-[`ADR-0022`](../adr/0022-sqm-radiometer-first.md) for radiometer-first ownership,
-[`ADR-0002`](../adr/0002-sqm-published-value-uncorrected.md) for the
-no-altitude-correction decision, and
-[`ADR-0028`](../adr/0028-tracked-black-level-supersedes-stored-bias.md) for why a
-tracked black level outranks any stored bias.
+See [`sqm/CONTEXT.md`](./sqm/CONTEXT.md) for canonical terminology and
+[`ADR 0030`](../adr/0022-sqm-measurement.md) for every SQM decision: what is published (§1),
+radiometer-first ownership (§2), which frame properties are read (§3), the
+pedestal precedence (§4), the colour-keyed zero point (§5), and the stellar
+diagnostic path (§6).
