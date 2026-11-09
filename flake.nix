@@ -45,7 +45,13 @@
       xdg.portal.enable = false;
       services.pipewire.enable = false;
       services.pulseaudio.enable = false;
-      boot.initrd.availableKernelModules = lib.mkForce [ "mmc_block" "usbhid" "usb_storage" "vc4" ];
+      # The mkForce also removes the checksum modules that the NixOS btrfs
+      # module adds, so they are listed here. Without crc32c, stage 1 cannot
+      # mount the btrfs root. The names are the algorithm names that btrfs asks for.
+      boot.initrd.availableKernelModules = lib.mkForce [
+        "mmc_block" "usbhid" "usb_storage" "vc4"
+        "crc32c" "xxhash64" "sha256" "blake2b-256"
+      ];
     };
 
     # Shared modules for all PiFinder configurations
