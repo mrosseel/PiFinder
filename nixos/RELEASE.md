@@ -50,13 +50,13 @@ Devices also use `cache.nixos.org` for paths that nixpkgs builds.
    branch with `nixos`:
 
    ```sh
-   jj git fetch --remote upstream && jj git fetch --remote origin
-   for f in .github/workflows/release.yml .github/scripts/update_manifest.py .github/scripts/publish_manifest.sh; do
-     diff <(jj file show -r ci/btrfs-migration-release@upstream "$f") <(jj file show -r nixos@origin "$f")
-   done
+   git fetch https://github.com/brickbots/PiFinder.git ci/btrfs-migration-release && ci=$(git rev-parse FETCH_HEAD)
+   git fetch https://github.com/mrosseel/PiFinder.git nixos && nixos=$(git rev-parse FETCH_HEAD)
+   git diff --stat "$ci" "$nixos" -- .github/workflows/release.yml \
+     .github/scripts/update_manifest.py .github/scripts/publish_manifest.sh
    ```
 
-   If they are different, add a commit to the CI branch that copies them.
+   No output means that the files are the same. If they are different, add a commit to the CI branch that copies them.
    Push it as a fast-forward. Never force-push.
 5. Set `new_migration_tarball` only when the migration must change. See
    [When a new tarball is needed](#when-a-new-tarball-is-needed). When it is
@@ -186,10 +186,9 @@ and a rev 4 (CM4) before the manifest names it.
 - **The manifest marks an entry available only when the cache serves its
   narinfo.** A failed Attic push gives `available: false`, and 2.6.4 skips
   that entry.
-- **Read the live manifest.** A local `jj` copy of `nixos-manifest@upstream`
-  can be older than the last release. The same applies to
-  `ci/btrfs-migration-release@upstream`: run `jj git fetch --remote upstream`
-  before the diff in rule 4.
+- **Read the live manifest.** A local copy of the `nixos-manifest` branch can
+  be older than the last release. Use the raw URL in
+  [Start a release](#start-a-release).
 - **The initrd module list is forced.** `flake.nix` sets
   `boot.initrd.availableKernelModules` with `lib.mkForce`. This also removes
   the modules that NixOS modules add, for example the btrfs checksum modules.
