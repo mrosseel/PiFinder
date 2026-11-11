@@ -345,7 +345,12 @@ Frequently Asked Questions
    has been turned off for a while.  The software doesn't trust the system clock.  It uses GPS
    time for everything except log-file timestamps.
 
-   To sync the system clock to GPS time, run these commands in a terminal on the PiFinder:
+   On the NixOS image, chrony already syncs the system clock.  It uses GPS time as soon as
+   the GPS has a fix, and internet NTP servers when they are available.  To see the time
+   sources, run ``chronyc sources`` in a terminal on the PiFinder.
+
+   On a Raspberry Pi OS install, to sync the system clock to GPS time, run these commands in
+   a terminal on the PiFinder:
 
    .. code-block:: bash
 
