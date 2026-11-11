@@ -60,6 +60,7 @@
       ./nixos/hardware.nix
       ./nixos/networking.nix
       ./nixos/services.nix
+      ./nixos/time.nix
       ./nixos/python-env.nix
       ./nixos/migration.nix
       headlessModule
@@ -509,6 +510,10 @@
     };
 
     packages.x86_64-linux.pifinder-kernel-cross = pifinderCrossKernel;
+
+    # VM test of the GPS time path (gpsd -> chrony -> system clock).
+    checks.x86_64-linux.chrony-gps =
+      nixpkgs.legacyPackages.x86_64-linux.testers.runNixOSTest ./nixos/tests/chrony-gps/test.nix;
 
     devShells = {
       x86_64-linux.default = mkDevShell "x86_64-linux";
