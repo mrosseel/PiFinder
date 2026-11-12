@@ -178,6 +178,14 @@ _Avoid_: reading bare `datetime()` for display (it returns UTC after normalisati
 The process that fuses fresh plate-solves with IMU samples and publishes the result. Single owner of the `solve`-state values (`pointing.camera.solve`, `pointing.aligned.solve`) and the `ImuDeadReckoning` instance.
 _Avoid_: fuser, merger.
 
+**Sky simulator**:
+`sky_sim.SkySimulator`, started with `--sky-sim FILE|NAME|default`. A solve source in the integrator: it replaces the solver output with solves made from a **pointing source** (`mount`, `fixed_radec`, `fixed_altaz`, `path`) plus a **pointing error**, noise, failures and scenario events in time. For tests and demos with no sky (see [ADR 0047](../../adr/0047-sky-simulator-is-a-solve-source.md)).
+_Avoid_: camera simulator (it makes no frames), replay (that is a telemetry recording).
+
+**Pointing source**:
+The part of the sky simulator that tells where the telescope points, as a JNow position and whether it moves. Scenario files select it with `"source"`.
+_Avoid_: target (that is the object a user selects).
+
 **Anchor**:
 The IMU dead-reckoning reference: the pair of `pointing.camera.solve` (camera-axis truth from the latest plate-solve) and `imu_anchor` (the IMU quaternion sampled on the same frame). Owned by the integrator. Updated only on successful plate-solves; preserved across failed solves so dead-reckoning continues.
 _Avoid_: last_image_solve (legacy name), last_solve (this is the *state* name on a `PointingAxis`, not a field), last_solution.

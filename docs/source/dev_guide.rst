@@ -655,6 +655,91 @@ opens a Messier object and shows the marking menu:
    ``python tools/demo_layout_editor.py`` from the ``python`` folder and drag
    the markers.
 
+Simulating the sky
+..................
+
+The sky simulator makes plate solves with no sky and no camera. The
+integrator takes its solves from the simulator instead of the solver. The
+debug camera still runs, but PiFinder does not use its solves. Use the
+simulator to test the screens that need a position, to test mount control,
+and to record demo videos.
+
+.. code-block::
+
+    python3 -m PiFinder.main -fh --camera debug -x --sky-sim dobsonian
+
+``--sky-sim`` takes one of these values:
+
+- ``default``: follow the INDI mount, with the default settings.
+- A scenario name: ``NAME`` loads ``sky_sim/NAME.json`` in the repository.
+- The path of a settings file (JSON).
+
+The **source** setting tells where the telescope points:
+
+===============  ===============================================================
+Source           The telescope
+===============  ===============================================================
+``mount``        follows an INDI mount, normally the INDI telescope simulator.
+                 Goto, sync, refine and drift compensation work as on a real
+                 sky. A solve fails while the mount slews.
+``fixed_radec``  tracks one J2000 position: ``ra_deg``, ``dec_deg``.
+``fixed_altaz``  does not move, as a Dobsonian: ``alt_deg``, ``az_deg``. The
+                 sky drifts through the view.
+``path``         moves along timed waypoints in ``path``. Each waypoint has a
+                 time ``t`` in seconds and a J2000 position (``ra``, ``dec``)
+                 or an alt/az position (``alt``, ``az``). The telescope moves in
+                 a straight line between two waypoints and stays on the last
+                 one. A solve fails while the telescope moves faster than
+                 ``blur_deg_s``.
+===============  ===============================================================
+
+The alt/az sources need the observer location. Set ``lat_deg`` and
+``lon_deg``, or the simulator uses the PiFinder location after a GPS lock.
+The fake GPS of ``-fh`` gives a lock.
+
+The other settings apply to all sources:
+
+===================  =========================================================
+Setting              Meaning
+===================  =========================================================
+``rate_hz``          Solves per second (default 1).
+``offset_ra_deg``,   The pointing error: the telescope points this far from
+``offset_dec_deg``   the source position. Mount control must correct it.
+``noise_arcsec``     The random error of one solve (default 10).
+``failure_rate``     The part of the solves that fail, from 0 to 1.
+``roll_deg``         The roll of the solves.
+``seed``             The seed of the random numbers, for a repeatable run.
+``events``           Setting changes at a time ``t`` in seconds after the
+                     start, for example clouds.
+===================  =========================================================
+
+The repository has these scenarios in ``sky_sim/``:
+
+- ``clouds``: the INDI mount, with clouds from 40 s to 60 s.
+- ``dobsonian``: a Dobsonian that points south at 45° altitude.
+- ``tracking_m31``: a tracking telescope on M 31.
+- ``pushto_m13``: a push-to from Vega to M 13 in two moves.
+
+This file is an example of a mount with clouds:
+
+.. code-block:: json
+
+    {"source": "mount", "offset_ra_deg": 1.5, "offset_dec_deg": -0.8,
+     "noise_arcsec": 10, "failure_rate": 0.05, "seed": 1,
+     "events": [{"t": 40, "failure_rate": 1.0},
+                {"t": 60, "failure_rate": 0.05}]}
+
+To test mount control with the ``mount`` source, start ``indiserver`` and
+select the Telescope Simulator as the mount. See :doc:`mount_control`. The
+key script ``scripts/indi_mount_tour.pfs`` records the mount control demo
+video with the demo display.
+
+The simulator is not a telemetry replay. A replay plays the solves and IMU
+samples of a recorded night. The simulator makes new solves from a model, and
+it reacts to the mount. It makes no camera frames, so it does not test the
+solver, the SQM or the auto exposure. See
+``docs/adr/0047-sky-simulator-is-a-solve-source.md``.
+
 
 Developing on the PiFinder itself
 ---------------------------------

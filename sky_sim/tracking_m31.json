@@ -1,0 +1,9 @@
+{
+  "source": "fixed_radec",
+  "ra_deg": 10.6847,
+  "dec_deg": 41.2687,
+  "offset_ra_deg": 0.0,
+  "offset_dec_deg": 0.0,
+  "noise_arcsec": 10,
+  "seed": 1
+}

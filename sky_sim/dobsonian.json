@@ -1,0 +1,10 @@
+{
+  "source": "fixed_altaz",
+  "alt_deg": 45.0,
+  "az_deg": 180.0,
+  "offset_ra_deg": 0.0,
+  "offset_dec_deg": 0.0,
+  "noise_arcsec": 15,
+  "failure_rate": 0.05,
+  "seed": 1
+}

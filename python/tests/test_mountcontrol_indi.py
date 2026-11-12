@@ -459,7 +459,7 @@ def test_closed_loop_goto_refines_onto_the_target(indi: int) -> None:
         assert solve is not None
         assert abs((solve[0] - target[0] + 180) % 360 - 180) <= 0.01
         assert abs(solve[1] - target[1]) <= 0.01
-        assert sim.sync_ra == pytest.approx(1.5, abs=0.01)
+        assert sim.source.sync_ra == pytest.approx(1.5, abs=0.01)
     finally:
         mount.mount_queue.put({"type": "exit"})
         runner.join(timeout=10)
