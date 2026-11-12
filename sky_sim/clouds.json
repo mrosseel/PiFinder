@@ -1,0 +1,13 @@
+{
+  "source": "mount",
+  "rate_hz": 1.0,
+  "offset_ra_deg": 1.5,
+  "offset_dec_deg": -0.8,
+  "noise_arcsec": 10,
+  "failure_rate": 0.05,
+  "seed": 1,
+  "events": [
+    {"t": 40, "failure_rate": 1.0},
+    {"t": 60, "failure_rate": 0.05}
+  ]
+}

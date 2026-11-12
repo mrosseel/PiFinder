@@ -1511,8 +1511,9 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--log", help="Log to file", action="store_true")
     parser.add_argument(
         "--sky-sim",
-        help="Take plate solves from the closed-loop sky simulator, which follows "
-        "the INDI mount: a settings file (JSON) or 'default'. See PiFinder/sky_sim.py",
+        help="Take plate solves from the sky simulator: a settings file (JSON), "
+        "a scenario name from sky_sim/ in the repository, or 'default' (follows "
+        "the INDI mount). See docs/source/dev_guide.rst",
         default=None,
     )
     parser.add_argument(

@@ -21,6 +21,7 @@ PiFinder is a multi-process Raspberry Pi finder/plate-solver. These contexts eac
 ## Relationships
 
 - **Positioning → Mount**: the mount process reads `shared_state.solution()`. It uses only `pointing.aligned.solve` and `last_solve_success` (a camera solve, never an IMU estimate), converted to **JNow**, for sync and refine (see [ADR 0046](./docs/adr/0046-mount-control-over-indi.md)).
+- **Mount → Positioning (tests and demos only)**: the `mount` pointing source of the **sky simulator** reads the INDI mount position and makes the solves from it, so the loop goto → solve → sync → refine closes with no sky (see [ADR 0047](./docs/adr/0047-sky-simulator-is-a-solve-source.md)).
 - **GPS → Mount**: the mount process sends the stored location (only with a lock) and the time to the mount. The **generic USB bridge** rule decides whether gpsd or a mount gets a USB-serial chip.
 - **Positioning → Catalog**: Catalog reads RA/Dec/Alt/Az from `shared_state.solution()` to compute visibility and "near me" lists.
 - **GPS → system-wide**: the GPS process is the only subsystem process that does **not** hold `shared_state`; it publishes `("fix" | "time" | "satellites", payload)` onto `gps_queue` and the main loop writes them into shared state on its behalf, applying the **location source** precedence rules (a `WEB`/`MANUAL`/`CONFIG:`/`replay` location outranks the receiver) and discarding any fix whose **position error** is worse than the stored one. `gps_queue` flows only *into* main — there is no main → GPS channel.

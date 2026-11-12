@@ -216,6 +216,14 @@ class LensSelfHeal:
         self._streak = 0
 
 
+def _observer_location(shared_state) -> Optional[tuple[float, float]]:
+    """PiFinder's (lat, lon) for the sky simulator, or None before a lock."""
+    location = shared_state.location()
+    if location is None or not location.lock:
+        return None
+    return location.lat, location.lon
+
+
 def integrator(
     shared_state,
     solver_queue,
@@ -226,8 +234,9 @@ def integrator(
     camera_command_queue=None,
     sky_sim: Optional[str] = None,
 ):
-    """``sky_sim``: a sky simulator settings file, or "default". The solves
-    then come from the simulator (PiFinder.sky_sim), not from the solver."""
+    """``sky_sim``: a sky simulator settings file, a scenario name or
+    "default". The solves then come from the simulator (PiFinder.sky_sim),
+    not from the solver."""
     MultiprocLogging.configurer(log_queue)
     if is_debug:
         logger.setLevel(logging.DEBUG)
@@ -258,7 +267,9 @@ def integrator(
         simulator = None
         if sky_sim is not None:
             simulator = SkySimulator(
-                SkySimSettings.load(sky_sim), shared_state.datetime
+                SkySimSettings.load(sky_sim),
+                shared_state.datetime,
+                location=lambda: _observer_location(shared_state),
             )
             logger.info("Solves come from the sky simulator (%s)", sky_sim)
 
