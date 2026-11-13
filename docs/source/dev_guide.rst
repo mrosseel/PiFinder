@@ -229,7 +229,7 @@ You also need to check the translations of strings marked as "fuzzy". You need t
 
 The Babel toolchain extracts the strings, updates the ``.po`` files, and compiles
 them into the ``.mo`` files the PiFinder reads. Run it from ``python/`` inside the
-dev shell (see `Install dependencies with Nix`_):
+dev shell (see `Step 3: Enter the dev shell`_):
 
 .. code-block::
 
@@ -250,104 +250,217 @@ Please post the changed po files in the Discord channel "translation" and we wil
 Setup the development environment
 ---------------------------------
 
-PiFinder is developed on a Linux machine with the `Nix package manager
-<https://nixos.org/download/>`_, which provides the exact toolchain the project
-builds and tests with. An x86_64 machine running Linux — including WSL2 on
-Windows — is the primary platform, and the rest of this guide assumes it.
+You develop PiFinder on a desktop or laptop computer. The `Nix package manager
+<https://nixos.org/download/>`_ installs the exact tools and Python libraries
+that the project builds and tests with. You do not install Python or its
+libraries by hand.
 
-Most UI and catalog work can be done on that machine alone: the display is
-emulated and the camera, IMU and GPS are faked with the flags described under
-`Running/Debugging from the command line`_. Those physical features can only be
-exercised on a real PiFinder.
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
 
-The device itself runs an immutable NixOS image, so its software sits read-only in
-the Nix store. For a finished change you build an image and install it over the
-air through the update channels (see `Beta Testing`_), or cut a release. For quick
-iteration against the real camera, IMU and GPS, though, you can point the device
-at an editable copy of your code and skip the image build entirely — see
-`Developing on the PiFinder itself`_.
+   * - Your computer
+     - Support
+   * - Linux, x86_64 or ARM64
+     - Full support. This is the main development platform.
+   * - Windows 10 or 11
+     - Supported through WSL2. You run Nix and PiFinder inside a Linux
+       distribution in WSL2, and follow the Linux steps there.
+   * - macOS on Apple silicon (M1 or later)
+     - Supported, with a smaller dev shell. It does not contain the Linux-only
+       libraries for the camera, GPS and network (libcamera, gpsd,
+       NetworkManager).
+   * - macOS on Intel
+     - Not supported. The flake has no dev shell for this system.
 
-To get started, fork the repo and clone your fork, then set up the environment as
-described next.
+Most UI and catalog work needs only your computer. PiFinder emulates the screen
+in a window and fakes the camera, IMU and GPS. The flags that do this are in
+`Running/Debugging from the command line`_. To test the real camera, IMU and
+GPS, you need a PiFinder.
 
-Install dependencies with Nix
-.............................
+The PiFinder runs an immutable NixOS image, so its software is read-only in the
+Nix store. To ship a finished change, you build an image and install it over the
+air through the update channels (see `Beta Testing`_). For quick tests against
+the real hardware, you can run an editable copy of your code on the PiFinder
+without an image build. See `Developing on the PiFinder itself`_.
 
-PiFinder's development environment is described by the ``flake.nix`` at the
-repository root, so you don't install Python or its libraries by hand. On NixOS
-the Nix package manager is built in; on another Linux machine, install it and
-enable flakes. If you use `direnv <https://direnv.net/>`_, let it manage the
-shell automatically from the repository root:
+Step 1: Install Nix
+...................
 
-.. code-block::
+Install Nix with the instructions on the `Nix download page
+<https://nixos.org/download/>`_ for your system:
 
-    direnv allow
+- **Linux**: use the multi-user installation.
+- **Windows**: first install WSL2. Open PowerShell as administrator and run
+  ``wsl --install``. This installs Ubuntu. Open the Ubuntu terminal and use the
+  WSL2 instructions on the Nix download page.
+- **macOS**: use the macOS installation.
+- **NixOS**: Nix is already installed.
 
-The shell then loads and unloads as you enter and leave the checkout. If you do
-not use direnv, enter the identical shell explicitly instead:
+Then configure Nix once. The configuration does two things:
 
-.. code-block::
+- It turns on *flakes*. The PiFinder dev shell is a flake, and flakes are an
+  optional Nix feature.
+- It adds the PiFinder binary cache. CI builds the dev shell for Linux and puts
+  it in this cache, so Nix downloads the shell instead of compiling it.
+
+Add the settings to the system-wide Nix configuration file:
+
+.. code-block:: bash
+
+    sudo mkdir -p /etc/nix
+    sudo tee -a /etc/nix/nix.conf <<'EOF'
+    experimental-features = nix-command flakes
+    extra-substituters = https://cache.pifinder.eu/pifinder
+    extra-trusted-public-keys = pifinder:8UU/O3oLkaJHHUyqEcPGl+9F1m4MqDca39Ewl49jBmE=
+    EOF
+
+Then restart the Nix daemon, so that it reads the new settings:
+
+- **Linux and WSL2**: ``sudo systemctl restart nix-daemon``. If you installed
+  Nix without a daemon, skip this step.
+- **macOS**: ``sudo launchctl kickstart -k system/org.nixos.nix-daemon``.
+
+On NixOS, add the settings to your system configuration instead, then rebuild:
+
+.. code-block:: nix
+
+    nix.settings = {
+      experimental-features = [ "nix-command" "flakes" ];
+      extra-substituters = [ "https://cache.pifinder.eu/pifinder" ];
+      extra-trusted-public-keys = [ "pifinder:8UU/O3oLkaJHHUyqEcPGl+9F1m4MqDca39Ewl49jBmE=" ];
+    };
+
+Step 2: Get the code
+....................
+
+Fork the repository on GitHub, then clone your fork:
+
+.. code-block:: bash
+
+    git clone https://github.com/<your-account>/PiFinder.git
+    cd PiFinder
+
+If ``git`` is not installed yet, run ``nix shell nixpkgs#git`` first. The dev
+shell supplies ``git`` after that.
+
+.. note::
+   On Windows, clone into your Linux home folder in WSL2, for example
+   ``~/PiFinder``. Do not clone into a Windows folder under ``/mnt/c``. File
+   access there is much slower, and Nix and direnv do not work well on it.
+
+Step 3: Enter the dev shell
+...........................
+
+You can enter the dev shell in two ways. Both give you the same shell.
+
+**With direnv (recommended).** `direnv <https://direnv.net/>`_ loads the dev
+shell when you change into the checkout, and unloads it when you leave. Set it
+up once:
+
+1. Install direnv and add its hook to your shell. The `direnv installation page
+   <https://direnv.net/docs/installation.html>`_ shows the hook line for bash,
+   zsh and fish.
+2. Install `nix-direnv <https://github.com/nix-community/nix-direnv>`_. It
+   caches the dev shell, so direnv loads it in about a second. Without it,
+   direnv evaluates the shell again each time you enter the checkout.
+3. From the repository root, allow the ``.envrc`` file:
+
+   .. code-block:: bash
+
+       direnv allow
+
+direnv reloads the shell when ``flake.nix``, ``flake.lock``,
+``python/pyproject.toml`` or ``python/uv.lock`` changes. You do not need to do
+anything after you pull new code.
+
+**With nix develop.** If you do not use direnv, enter the shell by hand from the
+repository root:
+
+.. code-block:: bash
 
     nix develop
 
-Both routes give you everything PiFinder needs on your ``PATH``: a Python
-interpreter with the project's dependencies, the ``ruff`` linter, the ``uv``
-package manager, and the ``cedar-detect-server`` plate-solving helper. The
-repo's ``.envrc`` uses the classic ``shell.nix`` entry point, which selects the
-same flake dev shell but filters large runtime data out of the source copied to
-the Nix store. This keeps direnv reloads quick; manual ``nix develop`` and CI
-still evaluate the flake directly.
+Type ``exit`` to leave it.
 
-You still need to fetch the Tetra3 submodule once; see
-`Install the Tetra3/Cedar solver`_ below.
+The first time you enter the dev shell, Nix downloads it from the binary cache.
+This can take some minutes. If you change ``flake.nix`` or the Python
+dependencies, the cache may not have your shell yet. Nix then compiles some
+packages from source, such as ``cedar-detect-server``, which takes longer.
+After the first time, the shell loads from the Nix store in seconds.
 
+.. note::
+   On macOS, the cache does not contain the dev shell, because CI builds it
+   only for Linux. The first entry compiles part of it.
+
+The dev shell puts these on your ``PATH``:
+
+- Python with every PiFinder dependency, including the development tools
+  ``pytest`` and ``mypy``. The plate solver (``cedar-solve``, which you import
+  as ``tetra3``) is an ordinary Python dependency, so there is no git submodule
+  to fetch.
+- The ``ruff`` linter and the ``uv`` package manager.
+- ``cedar-detect-server``, the star detection process that the solver uses.
+- On Linux only: ``libcamera``, ``gpsd`` and the NetworkManager bindings.
+
+.. note::
+   The ``.envrc`` file loads the shell through ``shell.nix``. That file
+   evaluates the same flake dev shell. It copies only the files that the shell
+   needs into the Nix store, which is why direnv reloads are fast. ``nix
+   develop`` evaluates the flake directly.
+
+Step 4: Start PiFinder
+......................
+
+Start the star detection process in one terminal:
+
+.. code-block:: bash
+
+    cedar-detect-server -p 50551
+
+In a second terminal, start PiFinder from the ``python`` folder:
+
+.. code-block:: bash
+
+    cd python
+    python -m PiFinder.main -fh --camera debug --keyboard local -x
+
+A window opens and shows the emulated screen. Operate it with your keyboard, as
+described in :ref:`dev_guide:-k keyboard, --keyboard keyboard`. Press "Ctrl + C"
+in the terminal to stop PiFinder.
 
 Hipparcos catalog
 .................
 
-The `hipparcos catalog <https://www.cosmos.esa.int/web/hipparcos>`_
-(``astro_data/hip_main.dat``) now ships in the repository, so no separate
-download is required. If you ever need to refresh it, it can be re-fetched
-from:
+The `Hipparcos catalog <https://www.cosmos.esa.int/web/hipparcos>`_
+(``astro_data/hip_main.dat``) is in the repository, so you do not download it
+separately. To refresh it, run:
 
 .. code-block::
 
     wget -O astro_data/hip_main.dat https://cdsarc.cds.unistra.fr/ftp/cats/I/239/hip_main.dat
 
-Install the Tetra3/Cedar solver
-................................
-
-The `Tetra3 Solver <https://github.com/esa/tetra3>`_ is a "fast lost-in-space
-plate solver for star trackers written in Python". It is the next gen solver, that PiFinder uses.
-
-This is set up as a git submodule and you will need to initialize it using the following
-command from with your checked out repo
-
-.. code-block::
-
-    git submodule update --init --recursive
-
 Code Quality Automation
 -----------------------
 
 PiFinder uses Ruff for linting and formatting, MyPy for type checking, and
-PyTest for the test suite. They all come with the dev shell, so inside
-``nix develop`` you run them directly from the ``python`` directory. Every push
-and pull request runs the same commands in CI, so it's worth running them
-locally before you open a PR.
+PyTest for the test suite. The dev shell supplies all three. Run them from the
+``python`` directory. CI runs the same checks on every push and pull request, so
+run them before you open a pull request.
 
 Linting and formatting
 ......................
 
-`Ruff <https://docs.astral.sh/ruff/>`_ handles both. From ``python/``:
+`Ruff <https://docs.astral.sh/ruff/>`_ handles both. The dev shell has the same
+Ruff version as CI, pinned in ``python/pyproject.toml``. From ``python/``:
 
 .. code-block::
 
-    ruff check        # report common issues (add --fix to repair them)
-    ruff format       # reformat code in the Black style
+    ruff check .     # report common issues (add --fix to repair them)
+    ruff format .    # reformat code in the Black style
 
 CI runs ``ruff check`` and ``ruff format --check`` and fails if either reports
-anything, so run them before you push.
+anything.
 
 Type checking
 .............
@@ -358,7 +471,7 @@ annotated. From ``python/``:
 
 .. code-block::
 
-    mypy .
+    mypy PiFinder
 
 If you've not worked with type hints before we'll help you out, so feel free to
 open a PR for non-type-hinted code and we can collaborate.

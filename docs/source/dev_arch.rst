@@ -313,7 +313,7 @@ Unit Testing
 ...............
 
 On commit or pull request to the repository the unit tests in ``python/tests`` are
-run in CI inside ``nix develop`` with ``pytest -m unit``, configured in
+run in CI with ``pytest -m unit``, configured in
 ``pyproject.toml``. **Please provide unit tests with your pull requests.**
 
 Fuzz Testing
