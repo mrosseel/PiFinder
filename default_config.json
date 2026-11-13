@@ -20,6 +20,12 @@
     "image_nsew": true,
     "image_bbox": true,
     "chart_coord_sys": "horiz",
+    "obj_chart_crosshair": "pulse",
+    "obj_chart_crosshair_style": "simple",
+    "obj_chart_mark_source": "standard",
+    "obj_chart_crosshair_speed": "2.0",
+    "obj_chart_lm_mode": "auto",
+    "obj_chart_lm_fixed": 14.0,
     "target_pixel": [256, 256],
     "gps_type": "ublox",
     "gps_baud_rate": 9600,
@@ -30,6 +36,7 @@
     "mount_control_connection": "usb",
     "mount_control_address": "",
     "mount_control_arrows": "eyepiece",
+    "mount_control_track_rate": "auto",
     "filter.selected_catalogs": [
         "NGC",
         "M",
@@ -37,6 +44,8 @@
         "Str",
         "PL",
         "CM",
+        "MP",
+        "SA",
         "RDS"
     ],
     "filter.object_types": [
@@ -54,7 +63,9 @@
         "*",
         "?",
         "Pla",
-        "CM"
+        "CM",
+        "AS",
+        "Sat"
     ],
     "filter.constellations": [
         "And",

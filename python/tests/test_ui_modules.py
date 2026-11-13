@@ -53,6 +53,7 @@ import io
 import pkgutil
 import queue
 import shutil
+import threading
 import time
 from typing import Iterator
 from unittest import mock
@@ -288,6 +289,7 @@ def _sandbox_data_dir(tmp_path_factory):
         mock.patch.object(utils, "data_dir", sandbox),
         mock.patch.object(utils, "observations_db", sandbox / "observations.db"),
         mock.patch.object(utils, "debug_dump_dir", sandbox / "solver_debug_dumps"),
+        mock.patch.object(utils, "satellite_data_dir", sandbox / "satellites"),
     ):
         yield sandbox
 
@@ -316,7 +318,7 @@ def _fast_timezonefinder():
 
 @pytest.fixture(scope="session", autouse=True)
 def _fast_sleep():
-    """No-op time.sleep for the whole harness.
+    """No-op time.sleep for the key sweep in the main thread.
 
     Several wizards (SQM calibration/sweep/correction) are per-update state
     machines that sleep 0.2-0.5s on every frame while driving the real camera.
@@ -324,8 +326,20 @@ def _fast_sleep():
     minutes of pure wall-clock waiting. None of these modules busy-loop on a
     condition (no ``while``+sleep), so removing the waits is safe and changes
     no logic -- we only care that nothing raises.
+
+    Background threads keep the real sleep. Some of them loop with a sleep,
+    for example the comet download retry, which waits 60 s while comets.txt
+    is missing. A no-op sleep would turn that loop into a busy loop that
+    logs without a pause.
     """
-    with mock.patch("time.sleep", lambda *a, **k: None):
+    real_sleep = time.sleep
+    main_thread = threading.main_thread()
+
+    def main_thread_only_sleep(seconds):
+        if threading.current_thread() is not main_thread:
+            real_sleep(seconds)
+
+    with mock.patch("time.sleep", main_thread_only_sleep):
         yield
 
 
@@ -352,8 +366,46 @@ def _no_comet_download():
     """
     import PiFinder.comets as comets
 
+    with (
+        mock.patch.object(
+            comets,
+            "check_if_comet_download_needed",
+            return_value=(False, "test environment"),
+        ),
+        mock.patch.object(
+            comets, "comet_data_download", return_value=(False, None, None)
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_asteroid_download():
+    """Keep the UI harness hermetic while building AsteroidCatalog."""
+    import PiFinder.asteroids as asteroids
+
+    with (
+        mock.patch.object(
+            asteroids,
+            "check_asteroid_download_needed",
+            return_value=(False, "test environment"),
+        ),
+        mock.patch.object(asteroids, "download_asteroid_year"),
+    ):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_satellite_download():
+    """Stop the "Sat groups" menu from downloading a CelesTrak group.
+
+    The key sweep selects a group, and a selected group without a file
+    starts a download thread.
+    """
+    import PiFinder.satellites as satellites
+
     with mock.patch.object(
-        comets, "comet_data_download", return_value=(False, None, None)
+        satellites, "refresh_groups", return_value=satellites.GroupRefresh("failed")
     ):
         yield
 
@@ -706,6 +758,8 @@ def test_object_details_mount_keys(display, camera_image, catalogs, sample_objec
     assert mount_queue.empty()
 
     cfg.set_option("mount_control", True)
+    # The menu sweep of other tests can change the track rate setting too.
+    cfg.set_option("mount_control_track_rate", "auto")
     # 5 (GOTO) last: it opens the mount page.
     for number in (0, 1, 2, 3, 4, 6, 7, 8, 9, 5):
         module.key_number(number)
@@ -718,6 +772,7 @@ def test_object_details_mount_keys(display, camera_image, catalogs, sample_objec
         "ra": sample_object.ra,
         "dec": sample_object.dec,
         "epoch": "J2000",
+        "track_rate": "sidereal",
     }
     assert by_type["sync"] == {"type": "sync"}
     assert {"init", "stop_movement", "reduce_step_size", "increase_step_size"} <= set(
@@ -732,7 +787,7 @@ def test_object_details_mount_keys(display, camera_image, catalogs, sample_objec
     assert module.object_display_mode == object_details.DM_MOUNT
     module.cycle_display_mode()
     assert module.object_display_mode == object_details.DM_LOCATE
-    assert module.marking_menu is module._object_marking_menu
+    assert module.marking_menu is module._default_marking_menu
 
     # The square key reaches the mount key page, and it renders.
     for _step in range(6):

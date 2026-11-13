@@ -1,5 +1,4 @@
 import io
-import json
 import logging
 import time
 import uuid
@@ -7,6 +6,7 @@ import os
 import argparse
 import sys
 import multiprocessing
+import datetime
 from datetime import timezone
 
 import pydeepskylog as pds
@@ -19,6 +19,10 @@ from PiFinder import timez
 from PiFinder.db.observations_db import (
     ObservationsDatabase,
 )
+from PiFinder import web_observations
+from PiFinder import web_satellites
+from PiFinder import satellites as satellite_data
+from PiFinder.composite_object import CompositeObject, MagnitudeObject, SizeObject
 from PiFinder.equipment import (
     EYEPIECE_LIMITS,
     MOUNT_TYPES,
@@ -1107,60 +1111,338 @@ class Server:
                 ),
             )
 
+        def _tsv_response(observations, filename):
+            response = make_response(observations)
+            response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+            response.headers["Content-Type"] = "text/tsv"
+            return response
+
         @app.route("/observations")
         @auth_required
-        def obs_sessions():
+        def obs_nights():
             obs_db = ObservationsDatabase()
             if request.args.get("download", 0) == "1":
-                # Download all as TSV
-                observations = obs_db.observations_as_tsv()
+                return _tsv_response(obs_db.observations_as_tsv(), "observations.tsv")
 
-                response = make_response(observations)
-                response.headers["Content-Disposition"] = (
-                    "attachment; filename=observations.tsv"
-                )
-                response.headers["Content-Type"] = "text/tsv"
-                return response
+            nights = obs_db.get_nights()
+            for night in nights:
+                logs = obs_db.get_logs_by_night(night["night_key"])
+                night["ticks"] = web_observations.strip_ticks(night, logs)
+                night["hour_marks"] = web_observations.hour_marks(night)
 
-            # regular html page of sessions
-            sessions = obs_db.get_sessions()
-            metadata = {
-                "sess_count": len(sessions),
-                "object_count": sum(x["observations"] for x in sessions),
-                "total_duration": sum(x["duration"] for x in sessions),
-            }
-            return app.jinja_env.get_template("obs_sessions.html").render(
-                title=_("Observations"), sessions=sessions, metadata=metadata
+            return app.jinja_env.get_template("obs_nights.html").render(
+                title=_("Observations"),
+                nights=nights,
+                metadata=web_observations.night_summary(nights),
             )
+
+        @app.route("/observations/night/<night_key>")
+        @auth_required
+        def obs_night(night_key):
+            obs_db = ObservationsDatabase()
+            if request.args.get("download", 0) == "1":
+                return _tsv_response(
+                    obs_db.observations_as_tsv(night_key=night_key),
+                    f"observations_{night_key}.tsv",
+                )
+
+            logs = obs_db.get_logs_by_night(night_key)
+            night = next(
+                (n for n in obs_db.get_nights() if n["night_key"] == night_key),
+                None,
+            )
+            if night is None:
+                return redirect("/observations")
+
+            night["ticks"] = web_observations.strip_ticks(night, logs)
+            night["hour_marks"] = web_observations.hour_marks(night)
+            return app.jinja_env.get_template("obs_night_log.html").render(
+                title=_("Observing Night"),
+                night=night,
+                objects=web_observations.decorate_logs(logs),
+            )
+
+        @app.route("/observations/object/<catalog>/<int:sequence>")
+        @auth_required
+        def obs_object(catalog, sequence):
+            obs_db = ObservationsDatabase()
+            lookup = web_observations.ObjectLookup()
+            obj = lookup.composite(catalog, sequence)
+            if obj is None:
+                # A listing whose catalog is no longer installed: the log
+                # entries survive, the object behind them doesn't.
+                return redirect("/observations")
+
+            return app.jinja_env.get_template("obs_object.html").render(
+                title=obj.display_name,
+                object=obj,
+                listings=lookup.other_listings(obj),
+                logs=web_observations.decorate_logs(obs_db.get_object_history(obj)),
+                has_image=web_observations.poss_image_path(obj) is not None,
+                has_chart=web_observations.gaia_catalog_available(),
+            )
+
+        @app.route("/observations/object/<catalog>/<int:sequence>/image.jpg")
+        @auth_required
+        def obs_object_image(catalog, sequence):
+            obj = web_observations.ObjectLookup().composite(catalog, sequence)
+            path = None if obj is None else web_observations.poss_image_path(obj)
+            if path is None:
+                return "", 404
+            return send_file(path, mimetype="image/jpeg")
+
+        def _now_utc_source():
+            """The time, and True when it comes from the GPS."""
+            now = self.shared_state.datetime()
+            if now is None:
+                return datetime.datetime.now(timezone.utc), False
+            if now.tzinfo is None:
+                return now.replace(tzinfo=timezone.utc), True
+            return now, True
+
+        def _now_utc():
+            return _now_utc_source()[0]
+
+        def _satellites_redirect(message="", error=""):
+            query = []
+            if message:
+                query.append("msg=" + quote(message))
+            if error:
+                query.append("err=" + quote(error))
+            return redirect("/satellites" + ("?" + "&".join(query) if query else ""))
+
+        @app.route("/satellites")
+        @auth_required
+        def satellites_page():
+            now, time_from_gps = _now_utc_source()
+            show_all = request.args.get("all", "0") == "1"
+            max_mag = request.args.get("maxmag", type=float)
+            if max_mag is None and not show_all:
+                max_mag = web_satellites.DEFAULT_MAX_MAG
+            location = self.shared_state.location()
+            passes, cache = web_satellites.upcoming_passes(
+                now, location, visible_only=not show_all, max_mag=max_mag
+            )
+            return app.jinja_env.get_template("satellites.html").render(
+                title=_("Satellites"),
+                passes=passes,
+                cache=cache,
+                show_all=show_all,
+                max_mag=max_mag,
+                groups=web_satellites.group_status(now),
+                user_satellites=web_satellites.user_satellites(now),
+                corrected_satellites=web_satellites.corrected_satellites(now),
+                sky_now=web_satellites.sky_now(now, location),
+                time_from_gps=time_from_gps,
+                now_utc=now.strftime("%Y-%m-%d %H:%M"),
+                status_message=request.args.get("msg", ""),
+                error_message=request.args.get("err", ""),
+            )
+
+        @app.route("/satellites/add", methods=["POST"])
+        @auth_required
+        def satellites_add():
+            too_large = _("The file is too large. The limit is 1 MB.")
+            limit = web_satellites.MAX_UPLOAD_BYTES
+            # The request holds the file and the other form fields.
+            if (request.content_length or 0) > 2 * limit:
+                return _satellites_redirect(error=too_large)
+            text = request.form.get("elements", "")
+            upload = request.files.get("file")
+            if upload is not None and upload.filename:
+                content = upload.read(limit + 1)
+                if len(content) > limit:
+                    return _satellites_redirect(error=too_large)
+                text += "\n" + content.decode("utf-8", errors="replace")
+            found, errors = web_satellites.add_elements(
+                text,
+                name=request.form.get("name", ""),
+                norad=request.form.get("norad", ""),
+                std_mag=request.form.get("std_mag", ""),
+            )
+            message = ""
+            if found:
+                message = _("Saved {count}: {names}").format(
+                    count=len(found), names=", ".join(e.name for e in found[:10])
+                )
+            if not found and not errors:
+                errors = [_("Paste element sets or give a NORAD number")]
+            return _satellites_redirect(message, "; ".join(errors[:10]))
+
+        @app.route("/satellites/delete/<int:norad_id>", methods=["POST"])
+        @auth_required
+        def satellites_delete(norad_id):
+            if satellite_data.delete_user_element(norad_id):
+                return _satellites_redirect(_("Deleted {norad}").format(norad=norad_id))
+            return _satellites_redirect(
+                error=_("Not found: {norad}").format(norad=norad_id)
+            )
+
+        @app.route("/satellites/corrected/delete/<int:norad_id>", methods=["POST"])
+        @auth_required
+        def satellites_corrected_delete(norad_id):
+            if satellite_data.delete_corrected_element(norad_id):
+                return _satellites_redirect(_("Deleted {norad}").format(norad=norad_id))
+            return _satellites_redirect(
+                error=_("Not found: {norad}").format(norad=norad_id)
+            )
+
+        @app.route("/satellites/refresh", methods=["POST"])
+        @auth_required
+        def satellites_refresh():
+            """Update one group, or each selected group without a group."""
+            group = request.form.get("group", "")
+            groups = None
+            if group:
+                if group not in satellite_data.CELESTRAK_GROUPS:
+                    return _satellites_redirect(
+                        error=_("Not found: {norad}").format(norad=group)
+                    )
+                if not satellite_data.load_selection().group_enabled(group):
+                    return _satellites_redirect(
+                        error=_("Select {name} first").format(name=group)
+                    )
+                groups = (group,)
+            # The file times come from the system clock, so the check of the
+            # last download uses the system clock too.
+            result = satellite_data.refresh_groups(
+                datetime.datetime.now(timezone.utc), force=True, groups=groups
+            )
+            return _satellites_redirect(*web_satellites.refresh_message(result))
+
+        @app.route("/satellites/enable", methods=["POST"])
+        @auth_required
+        def satellites_enable():
+            """Select a group, or enable or disable one satellite of the user.
+
+            A selected group without a file downloads at once.
+            """
+            kind = request.form.get("kind", "")
+            name = request.form.get("id", "")
+            enabled = request.form.get("enabled", "0") == "1"
+            try:
+                web_satellites.set_enabled(kind, name, enabled)
+            except ValueError:
+                return _satellites_redirect(
+                    error=_("Not found: {norad}").format(norad=name)
+                )
+            if not enabled:
+                return _satellites_redirect(_("Disabled {name}").format(name=name))
+            message = _("Enabled {name}").format(name=name)
+            error = ""
+            if kind == "group":
+                result = web_satellites.download_if_missing(
+                    name, datetime.datetime.now(timezone.utc)
+                )
+                if result is not None:
+                    downloaded, error = web_satellites.refresh_message(result)
+                    if downloaded:
+                        message += ". " + downloaded
+            return _satellites_redirect(message, error)
+
+        @app.route("/satellites/show/<int:norad_id>", methods=["POST"])
+        @auth_required
+        def satellites_show(norad_id):
+            """Open the satellite on the PiFinder, as a push from a planetarium."""
+            now = _now_utc()
+            detail = web_satellites.satellite_detail(
+                norad_id, now, self.shared_state.location(), days=0.0
+            )
+            if detail is None or not detail["enabled"]:
+                return _satellites_redirect(
+                    error=_("Not found: {norad}").format(norad=norad_id)
+                )
+            ra, dec = (
+                (detail["now"]["ra"], detail["now"]["dec"]) if detail["now"] else (0, 0)
+            )
+            obj = CompositeObject.from_dict(
+                {
+                    "id": -1,
+                    "object_id": sys.maxsize - norad_id,
+                    "obj_type": "Sat",
+                    "ra": ra,
+                    "dec": dec,
+                    "const": "",
+                    "size": SizeObject([]),
+                    "mag": MagnitudeObject([]),
+                    "catalog_code": "SA",
+                    "sequence": norad_id,
+                    "names": [detail["name"]],
+                    "description": "",
+                }
+            )
+            self.shared_state.ui_state().add_recent(obj)
+            self.shared_state.ui_state().set_new_pushto(True)
+            self.ui_queue.put("push_object")
+            return redirect(f"/satellites/{norad_id}")
+
+        @app.route("/satellites/<int:norad_id>")
+        @auth_required
+        def satellite_page(norad_id):
+            now, time_from_gps = _now_utc_source()
+            detail = web_satellites.satellite_detail(
+                norad_id, now, self.shared_state.location()
+            )
+            if detail is None:
+                return _satellites_redirect(
+                    error=_("Not found: {norad}").format(norad=norad_id)
+                )
+            return app.jinja_env.get_template("satellite.html").render(
+                title=detail["name"],
+                sat=detail,
+                time_from_gps=time_from_gps,
+                now_utc=now.strftime("%Y-%m-%d %H:%M"),
+            )
+
+        @app.route("/api/satellites/passes")
+        @auth_required
+        def satellites_api_passes():
+            passes, cache = web_satellites.upcoming_passes(
+                _now_utc(),
+                self.shared_state.location(),
+                visible_only=request.args.get("all", "0") != "1",
+            )
+            return jsonify(
+                {
+                    "state": cache.get("state") if cache else None,
+                    "computed": cache.get("computed") if cache else None,
+                    "passes": passes,
+                }
+            )
+
+        @app.route("/observations/object/<catalog>/<int:sequence>/chart.png")
+        @auth_required
+        def obs_object_chart(catalog, sequence):
+            obj = web_observations.ObjectLookup().composite(catalog, sequence)
+            if obj is None:
+                return "", 404
+
+            fov = request.args.get("fov", type=float) or 1.0
+            chart = web_observations.render_chart(
+                obj, config.Config(), self.shared_state, fov=fov
+            )
+            if chart is None:
+                # The catalog is absent or still loading in the background;
+                # a later request finds it ready.
+                return "", 404
+            return send_file(io.BytesIO(chart), mimetype="image/png")
 
         @app.route("/observations/<session_id>")
         @auth_required
         def obs_session(session_id):
             obs_db = ObservationsDatabase()
             if request.args.get("download", 0) == "1":
-                # Download all as TSV
-                observations = obs_db.observations_as_tsv(session_id)
-
-                response = make_response(observations)
-                response.headers["Content-Disposition"] = (
-                    f"attachment; filename=observations_{session_id}.tsv"
+                return _tsv_response(
+                    obs_db.observations_as_tsv(session_id),
+                    f"observations_{session_id}.tsv",
                 )
-                response.headers["Content-Type"] = "text/tsv"
-                return response
 
-            session = obs_db.get_sessions(session_id)[0]
-            objects = obs_db.get_logs_by_session(session_id)
-            ret_objects = []
-            for obj in objects:
-                obj_ = dict(obj)
-                obj_notes = json.loads(obj_["notes"])
-                obj_["notes"] = "<br>".join(
-                    [f"{key}: {value}" for key, value in obj_notes.items()]
-                )
-                ret_objects.append(obj_)
-            return app.jinja_env.get_template("obs_session_log.html").render(
-                title=_("Session Log"), session=session, objects=ret_objects
-            )
+            # Sessions are software runs, not nights; a link to one lands on
+            # the night it was part of.
+            night_key = obs_db.night_key_for_session(session_id)
+            if night_key is None:
+                return redirect("/observations")
+            return redirect(f"/observations/night/{night_key}")
 
         def render_mount(cfg, error_message=None, form=None, status_message=None):
             values = mount_settings.MountSettings.from_config(cfg).as_dict()

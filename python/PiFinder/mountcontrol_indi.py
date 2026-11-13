@@ -20,6 +20,7 @@ from multiprocessing import Queue
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 from PiFinder import config, indi_drivers
+from PiFinder import track_rates
 from PiFinder.indi_client import TELESCOPE_INTERFACE, IndiClient, IndiProperty
 from PiFinder.mount_settings import MountSettings
 from PiFinder.mountcontrol_interface import (
@@ -59,6 +60,23 @@ SLEW_TIMEOUT_S = 300.0
 MOTION_AXIS_THRESHOLD = 0.38
 # Time for the driver to define CONNECTION_MODE after DRIVER_INFO.
 CONNECTION_MODE_WAIT_S = 3.0
+# The sidereal rate of TELESCOPE_TRACK_RATE, in arcseconds per second. With
+# TRACK_RATE_RA at this value the RA of the mount does not change.
+SIDEREAL_RATE_ARCSEC_S = 15.041067
+# The sign check of the custom track rates needs this much motion.
+RATE_CHECK_MIN_S = 0.9
+RATE_CHECK_MIN_DEG_S = 0.002
+
+
+def _moved_against(moved_deg_s: float, requested_deg_s: float) -> bool:
+    """The axis moved clearly in the direction opposite to the request."""
+    return (
+        abs(requested_deg_s) >= RATE_CHECK_MIN_DEG_S
+        and abs(moved_deg_s) >= abs(requested_deg_s) / 2.0
+        and (moved_deg_s > 0) != (requested_deg_s > 0)
+    )
+
+
 # A drift grew when it is larger than the last one by this many standard
 # errors of the difference. A wrong axis direction makes the drift grow by
 # the correction gain (0.7), and each drift is at least 4 standard errors
@@ -126,10 +144,16 @@ class MountControlIndi(MountControlBase):
         self._slew_target: Optional[Tuple[float, float]] = None
         # The track mode is Custom after a drift compensation.
         self._custom_tracking = False
-        # The direction of each TELESCOPE_TRACK_RATE axis for this driver:
-        # the change of the pointing per unit of rate (see _rate_values).
+        # The signs of the custom track rates of this driver (set_track_rates).
         self._ra_rate_sign = -1.0
         self._dec_rate_sign = 1.0
+        self._rate_sample: Optional[tuple] = None
+        self._ra_against = 0
+        self._dec_against = 0
+        # The lunar or solar rate as custom rates, for a driver without
+        # TRACK_LUNAR or TRACK_SOLAR (see refresh_track_rate), or None.
+        self._body_custom_rate: Optional[str] = None
+        self._body_rate_time = 0.0
         # The last drift adjustment and its standard error per axis
         # (ra, ra_se, dec, dec_se), to check the axis directions.
         self._last_drift: Optional[Tuple[float, float, float, float]] = None
@@ -560,6 +584,13 @@ class MountControlIndi(MountControlBase):
         dec_rate = rates.elements.get("TRACK_RATE_DE")
         if not isinstance(ra_rate, float) or not isinstance(dec_rate, float):
             return False
+        if not self._custom_tracking and self.track_rate != track_rates.SIDEREAL:
+            # TRACK_LUNAR or TRACK_SOLAR: the drift is on top of that rate.
+            body = self._body_rate_values(self.track_rate)
+            if body is not None:
+                ra_rate, dec_rate = body["TRACK_RATE_RA"], body["TRACK_RATE_DE"]
+        # The measured drift replaces the minute updates of a body rate.
+        self._body_custom_rate = None
         self._check_drift_directions(
             drift_rate_adjustment_ra, ra_se, drift_rate_adjustment_dec, dec_se
         )
@@ -571,24 +602,7 @@ class MountControlIndi(MountControlBase):
         # must move against the drift.
         new_ra = ra_rate - self._ra_rate_sign * drift_rate_adjustment_ra * 3600.0
         new_dec = dec_rate - self._dec_rate_sign * drift_rate_adjustment_dec * 3600.0
-        # While tracking, an INDI driver ignores a rate that has the opposite
-        # sign of its current rate ("Cannot reverse tracking"), and it sends
-        # no reply. A rate of zero is always accepted, so an axis whose sign
-        # changes goes through zero first.
-        if ra_rate * new_ra < 0 or dec_rate * new_dec < 0:
-            ok = self._set_number(
-                "TELESCOPE_TRACK_RATE",
-                {
-                    "TRACK_RATE_RA": 0.0 if ra_rate * new_ra < 0 else new_ra,
-                    "TRACK_RATE_DE": 0.0 if dec_rate * new_dec < 0 else new_dec,
-                },
-            )
-            if not ok:
-                return False
-        ok = self._set_number(
-            "TELESCOPE_TRACK_RATE",
-            {"TRACK_RATE_RA": new_ra, "TRACK_RATE_DE": new_dec},
-        )
+        ok = self._set_track_rate_values(new_ra, new_dec)
         if ok:
             self._last_drift = (
                 drift_rate_adjustment_ra,
@@ -616,6 +630,203 @@ class MountControlIndi(MountControlBase):
             logger.info(
                 "Dec track rate direction of this driver: %+.0f", self._dec_rate_sign
             )
+
+    def _set_track_rate_values(self, ra: float, dec: float) -> bool:
+        """Set TELESCOPE_TRACK_RATE (arcseconds per second).
+
+        While tracking, an INDI driver ignores a rate that has the opposite
+        sign of its current rate ("Cannot reverse tracking"), and it sends
+        no reply. A rate of zero is always accepted, so an axis whose sign
+        changes goes through zero first.
+        """
+        if self.device is None:
+            return False
+        rates = self.client.get_property(self.device, "TELESCOPE_TRACK_RATE")
+        current = rates.elements if rates is not None else {}
+        now_ra = current.get("TRACK_RATE_RA")
+        now_dec = current.get("TRACK_RATE_DE")
+        reverse_ra = isinstance(now_ra, float) and now_ra * ra < 0
+        reverse_dec = isinstance(now_dec, float) and now_dec * dec < 0
+        if reverse_ra or reverse_dec:
+            if not self._set_number(
+                "TELESCOPE_TRACK_RATE",
+                {
+                    "TRACK_RATE_RA": 0.0 if reverse_ra else ra,
+                    "TRACK_RATE_DE": 0.0 if reverse_dec else dec,
+                },
+            ):
+                return False
+        return self._set_number(
+            "TELESCOPE_TRACK_RATE", {"TRACK_RATE_RA": ra, "TRACK_RATE_DE": dec}
+        )
+
+    def set_tracking(self, on: bool) -> bool:
+        if self.device is None or not self._has("TELESCOPE_TRACK_STATE"):
+            return False
+        return self._set_switch(
+            "TELESCOPE_TRACK_STATE", "TRACK_ON" if on else "TRACK_OFF"
+        )
+
+    def set_track_rates(self, ra_rate_deg_s: float, dec_rate_deg_s: float) -> bool:
+        """Track a moving object: RA and Dec change at these rates (JNow).
+
+        INDI applies TELESCOPE_TRACK_RATE only in the TRACK_CUSTOM mode. The
+        sign of the rates differs between drivers: in the telescope
+        simulator a TRACK_RATE_RA above sidereal makes the RA decrease, and a
+        positive TRACK_RATE_DE makes the Dec decrease. Each call compares the
+        motion since the last call with the rates of that call, and turns
+        the sign of an axis that moved the wrong way. A mount without
+        TRACK_CUSTOM, or one that refuses the rates, returns False.
+        """
+        if self.device is None:
+            return False
+        if (
+            self.client.get_value(self.device, "TELESCOPE_TRACK_MODE", "TRACK_CUSTOM")
+            is None
+        ):
+            return False
+        if not self._custom_tracking:
+            if not self._set_switch("TELESCOPE_TRACK_MODE", "TRACK_CUSTOM"):
+                return False
+            self._custom_tracking = True
+            self._rate_sample = None
+        self._check_rate_signs()
+        values = {
+            "TRACK_RATE_RA": SIDEREAL_RATE_ARCSEC_S
+            + self._ra_rate_sign * ra_rate_deg_s * 3600.0,
+            "TRACK_RATE_DE": self._dec_rate_sign * dec_rate_deg_s * 3600.0,
+        }
+        rates = self.client.get_property(self.device, "TELESCOPE_TRACK_RATE")
+        current = rates.elements if rates is not None else {}
+        reverse = False
+        for name, value in values.items():
+            now = current.get(name)
+            if isinstance(now, float) and now * value < 0:
+                reverse = True
+        ok = self._set_track_rate_values(
+            values["TRACK_RATE_RA"], values["TRACK_RATE_DE"]
+        )
+        if reverse or not ok:
+            # The motion right after a reversal tells nothing about the sign.
+            self._rate_sample = None
+        elif self._rate_sample is None and self.current_ra is not None:
+            self._rate_sample = (
+                self.current_time,
+                self.current_ra,
+                self.current_dec,
+                ra_rate_deg_s,
+                dec_rate_deg_s,
+            )
+        return ok
+
+    def _check_rate_signs(self) -> None:
+        """Turn the sign of an axis that moved against the requested rate.
+
+        The motion is measured between two position reports of the driver,
+        over at least RATE_CHECK_MIN_S. An axis turns its sign after two
+        such measurements in a row against the request.
+        """
+        sample = self._rate_sample
+        if sample is None or self.current_ra is None or self.current_dec is None:
+            return
+        start, ra0, dec0, ra_rate, dec_rate = sample
+        seconds = self.current_time - start
+        if seconds < RATE_CHECK_MIN_S:
+            return
+        self._rate_sample = None
+        ra_moved = ((self.current_ra - ra0 + 540.0) % 360.0 - 180.0) / seconds
+        dec_moved = (self.current_dec - dec0) / seconds
+        self._ra_against = (
+            self._ra_against + 1 if _moved_against(ra_moved, ra_rate) else 0
+        )
+        self._dec_against = (
+            self._dec_against + 1 if _moved_against(dec_moved, dec_rate) else 0
+        )
+        if self._ra_against >= 2:
+            self._ra_rate_sign = -self._ra_rate_sign
+            self._ra_against = 0
+            logger.info("RA track rate sign of this driver: %+.0f", self._ra_rate_sign)
+        if self._dec_against >= 2:
+            self._dec_rate_sign = -self._dec_rate_sign
+            self._dec_against = 0
+            logger.info(
+                "Dec track rate sign of this driver: %+.0f", self._dec_rate_sign
+            )
+
+    def apply_track_rate(self, rate: str) -> bool:
+        """Sidereal, lunar or solar tracking: the INDI track mode if the
+        driver has it, else custom rates from the ephemeris."""
+        self._body_custom_rate = None
+        if self.device is None:
+            return rate == track_rates.SIDEREAL
+        mode = track_rates.INDI_TRACK_MODES[rate]
+        if rate == track_rates.SIDEREAL:
+            if self._custom_tracking:
+                self.restore_sidereal_tracking()
+            elif self._has("TELESCOPE_TRACK_MODE"):
+                self._set_switch("TELESCOPE_TRACK_MODE", mode)
+            return True
+        if self.client.get_value(self.device, "TELESCOPE_TRACK_MODE", mode) is not None:
+            self.restore_sidereal_tracking()
+            return self._set_switch("TELESCOPE_TRACK_MODE", mode)
+        if (
+            self.client.get_value(self.device, "TELESCOPE_TRACK_MODE", "TRACK_CUSTOM")
+            is None
+        ):
+            return False
+        values = self._body_rate_values(rate)
+        if values is None:
+            return False
+        if not self._custom_tracking:
+            if not self._set_switch("TELESCOPE_TRACK_MODE", "TRACK_CUSTOM"):
+                return False
+            self._custom_tracking = True
+        if not self._set_track_rate_values(
+            values["TRACK_RATE_RA"], values["TRACK_RATE_DE"]
+        ):
+            return False
+        self._body_custom_rate = rate
+        self._body_rate_time = time.time()
+        logger.info("%s rate as custom track rates: %s", rate, values)
+        return True
+
+    def refresh_track_rate(self) -> None:
+        """The rates of the Moon change in hours: update them every minute."""
+        if self._body_custom_rate is None:
+            return
+        if time.time() - self._body_rate_time < track_rates.RATE_STEP_S:
+            return
+        values = self._body_rate_values(self._body_custom_rate)
+        if values is not None and self._set_track_rate_values(
+            values["TRACK_RATE_RA"], values["TRACK_RATE_DE"]
+        ):
+            self._body_rate_time = time.time()
+
+    def _body_rate_values(self, rate: str) -> Optional[dict[str, float]]:
+        """TELESCOPE_TRACK_RATE values for the Moon or the Sun, or None."""
+        location = self.shared_state.location()
+        dt = self.shared_state.datetime()
+        if location is None or not location.lock or dt is None:
+            return None
+        rates = track_rates.body_rates(
+            rate, location.lat, location.lon, location.altitude, dt
+        )
+        if rates is None:
+            return None
+        ra_rate, dec_rate = rates
+        return {
+            "TRACK_RATE_RA": SIDEREAL_RATE_ARCSEC_S
+            + self._ra_rate_sign * ra_rate * 3600.0,
+            "TRACK_RATE_DE": self._dec_rate_sign * dec_rate * 3600.0,
+        }
+
+    def restore_sidereal_tracking(self) -> None:
+        self._body_custom_rate = None
+        if self.device is None or not self._custom_tracking:
+            return
+        self._set_track_rate_values(SIDEREAL_RATE_ARCSEC_S, 0.0)
+        self._set_switch("TELESCOPE_TRACK_MODE", "TRACK_SIDEREAL")
+        self._custom_tracking = False
 
     def move_mount_manual(
         self, direction: MountDirections, step_size_deg: float

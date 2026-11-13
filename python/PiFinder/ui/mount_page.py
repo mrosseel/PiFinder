@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from PiFinder.cat_images import cardinal_vectors
+from PiFinder.object_images.image_utils import cardinal_vectors
 from PiFinder.types.mount import (
     DISTANCE_PHASES,
     MountStatus,
