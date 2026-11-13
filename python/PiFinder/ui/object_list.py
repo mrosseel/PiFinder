@@ -67,6 +67,9 @@ class SortOrder(Enum):
     RA = 3  # By RA
     EARTH_DISTANCE = 4  # By physical distance from Earth
     OPPOSITION = 5  # By next opposition / greatest elongation
+    # Satellites above the horizon first, the highest at the top. Then by
+    # the start of the next visible pass.
+    NEXT_PASS = 6
 
 
 def _sort_objects(objects: ObjectSequence, order: SortOrder) -> ObjectSequence:
@@ -80,6 +83,7 @@ def _sort_objects(objects: ObjectSequence, order: SortOrder) -> ObjectSequence:
         SortOrder.BRIGHTEST: "filter_mag",
         SortOrder.EARTH_DISTANCE: "earth_distance_au",
         SortOrder.OPPOSITION: "opposition_ordinal",
+        SortOrder.NEXT_PASS: "next_pass_ts",
     }.get(order)
     if column is None:
         return objects
@@ -99,6 +103,7 @@ def _sort_order_label(sort_order: "SortOrder") -> str:
         SortOrder.RA: _("RA"),
         SortOrder.EARTH_DISTANCE: _("Distance"),
         SortOrder.OPPOSITION: _("Opposition"),
+        SortOrder.NEXT_PASS: _("Next pass"),
     }[sort_order]
 
 
@@ -203,13 +208,20 @@ class UIObjectList(UITextMenu):
         # currently displayed objects.
         if self.item_definition.get(
             "objects"
-        ) == "catalog" and self.item_definition.get("value") in ("CM", "MP"):
+        ) == "catalog" and self.item_definition.get("value") in ("CM", "MP", "SA"):
             marking_menu_down = MarkingMenuOption(
                 label=_("Refresh"),
                 callback=self.mm_refresh_dynamic_catalog,
             )
 
         asteroid_list = self.item_definition.get("value") == "MP"
+        satellite_list = self.item_definition.get("value") == "SA"
+        if asteroid_list:
+            third_sort = (_("OPP"), SortOrder.OPPOSITION)
+        elif satellite_list:
+            third_sort = (_("PASS"), SortOrder.NEXT_PASS)
+        else:
+            third_sort = (_("RA"), SortOrder.RA)
 
         self.marking_menu = MarkingMenu(
             left=MarkingMenuOption(
@@ -226,9 +238,9 @@ class UIObjectList(UITextMenu):
                         value=SortOrder.NEAREST,
                     ),
                     down=MarkingMenuOption(
-                        label=_("OPP") if asteroid_list else _("RA"),
+                        label=third_sort[0],
                         callback=self.mm_change_sort,
-                        value=(SortOrder.OPPOSITION if asteroid_list else SortOrder.RA),
+                        value=third_sort[1],
                     ),
                     right=MarkingMenuOption(
                         label=_("STD"),
@@ -245,7 +257,7 @@ class UIObjectList(UITextMenu):
             self.marking_menu.left.callback.right.selected = True
         if self.current_sort == SortOrder.NEAREST:
             self.marking_menu.left.callback.left.selected = True
-        if self.current_sort == SortOrder.RA:
+        if self.current_sort == third_sort[1]:
             self.marking_menu.left.callback.down.selected = True
 
         # Update object list populates self._menu_items
@@ -326,8 +338,8 @@ class UIObjectList(UITextMenu):
         )
 
     def _sources_replaced(self) -> bool:
-        """True when a catalog this list shows replaced its objects (a comet
-        or asteroid update) and was not filtered since."""
+        """True when a catalog this list shows changed its objects (a comet,
+        asteroid or satellite update) and was not filtered since."""
         return any(
             catalog.catalog_filter is not None and catalog.last_filtered == 0
             for catalog in self._source_catalogs()
@@ -623,7 +635,14 @@ class UIObjectList(UITextMenu):
         # call-site compatibility but the anchor now comes from the layout.
         return list_layout(self.display_class).rows[line_number].y
 
+    def _touch_sources(self) -> None:
+        """Tell the catalogs of this list that the list shows them. The
+        satellite catalog updates its positions only while it is in use."""
+        for catalog in self._source_catalogs():
+            catalog.touch()
+
     def active(self):
+        self._touch_sources()
         # trigger refilter
         super().active()
 
@@ -672,6 +691,7 @@ class UIObjectList(UITextMenu):
         # rotates); refresh the list when the filter reports staleness or a
         # dynamic catalog replaced its objects. Before the no-objects check so
         # an emptied-by-altitude list can repopulate as objects rise.
+        self._touch_sources()
         catalog_filter = self.catalogs.catalog_filter
         if catalog_filter is not None and (
             catalog_filter.dirty_time != self._list_dirty_time
@@ -1065,10 +1085,19 @@ class UIObjectList(UITextMenu):
         """Refresh downloaded elements while retaining the active objects."""
         catalog = self.catalogs.get_catalog_by_code(self.item_definition.get("value"))
         if catalog and hasattr(catalog, "refresh"):
-            self.message(
-                _("Refreshing..."), 1
-            )  # TRANSLATORS: Status message when refreshing comet catalog
-            catalog.refresh()
+            # A catalog that refuses the refresh returns the seconds to wait.
+            wait_seconds = catalog.refresh()
+            if wait_seconds:
+                self.message(
+                    _("Wait {minutes} min").format(
+                        minutes=math.ceil(wait_seconds / 60)
+                    ),
+                    2,
+                )  # TRANSLATORS: A catalog download was done a moment ago
+            else:
+                self.message(
+                    _("Refreshing..."), 1
+                )  # TRANSLATORS: Status message when refreshing comet catalog
             # Keep the current objects visible and refresh the status header.
             self.refresh_object_list(force_update=True)
         return True

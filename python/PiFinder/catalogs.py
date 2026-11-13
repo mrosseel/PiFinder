@@ -296,6 +296,11 @@ class Catalog(CatalogBase):
         self.initialized = True
         self._last_state: CatalogState = CatalogState.READY
 
+    def touch(self) -> None:
+        """Record a use of the catalog. A screen that shows the objects of
+        the catalog calls this on each update. A dynamic catalog does its
+        work only while it is in use. This catalog does nothing."""
+
     def is_selected(self):
         """
         Convenience function to see if this catalog is in the
@@ -482,6 +487,8 @@ class ArrayCatalog(Catalog):
             return np.full(self.get_count(), NO_DISTANCE)
         if name == "opposition_ordinal":
             return np.full(self.get_count(), NO_OPPOSITION, dtype=np.int64)
+        if name == "next_pass_ts":
+            return np.full(self.get_count(), np.inf)
         if name == "listing_key":
             if self._listing_keys is None:
                 self._listing_keys = (
@@ -958,6 +965,11 @@ class CatalogBuilder:
             shared_state=shared_state,
         )
         all_catalogs.add(asteroid_catalog)
+
+        from PiFinder.satellite_catalog import SatelliteCatalog
+
+        satellite_catalog: Catalog = SatelliteCatalog(shared_state=shared_state)
+        all_catalogs.add(satellite_catalog)
 
         assert self.check_catalogs_sequences(all_catalogs) is True
         return all_catalogs
