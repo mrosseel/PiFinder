@@ -2,30 +2,32 @@
 #   python/scripts/record_demo.sh --script demo_tour --record demo_tour.mp4
 # Wait for the start-up to end. Then open Objects > By Catalog > Messier,
 # open an object, show the marking menu and go back to the top.
+# Each screen stays 2 s, so the viewer can find the change and read it.
+# The object details and the marking menu stay 4 s.
 wait 15
 RIGHT
-wait 1
+wait 2
 DOWN
-wait 1
-RIGHT
-wait 1
-DOWN
-wait 1
-DOWN
-wait 1
-DOWN
-wait 1
+wait 2
 RIGHT
 wait 2
 DOWN
-wait 1
+wait 2
 DOWN
-wait 1
+wait 2
+DOWN
+wait 2
 RIGHT
-wait 3
+wait 2
+DOWN
+wait 2
+DOWN
+wait 2
+RIGHT
+wait 4
 LNG_SQUARE
-wait 2
+wait 4
 LEFT
-wait 1
+wait 2
 LNG_LEFT
 wait 2
