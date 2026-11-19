@@ -4,8 +4,9 @@ import time
 import datetime
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pprint import pformat
-from typing import List, Dict, Optional, Union
+from typing import Callable, List, Dict, Optional, Union
 
 import numpy as np
 
@@ -46,16 +47,52 @@ logger = logging.getLogger("Catalog")
 # code. The values name members of ui.object_list.DisplayModes. These catalogs
 # open in NAME mode: their sequence is only a position in the list, and an
 # observer knows the object by its name (Algol, RX Peg, Winter Triangle). All
-# other catalogs open in LOCATE mode. The registry is in code, not in
-# objects.db, because planets and comets are built at run time.
+# other catalogs open in LOCATE mode, except the INFO_MODE_CATALOGS. The
+# registry is in code, not in objects.db, because planets, comets and
+# satellites are built at run time.
 NAME_MODE_CATALOGS = frozenset(
     {"PL", "CM", "Str", "Nam", "SaA", "SaR", "TLK", "SaM", "RDS", "WDS"}
 )
 
+# These catalogs open in INFO mode. The left column of the satellite list
+# ("SA") shows the name, and INFO mode shows where the satellite is (see
+# Catalog.list_info_text).
+INFO_MODE_CATALOGS = frozenset({"SA"})
+
+# The sort order a list of the catalog opens in, by catalog code. The values
+# name members of ui.object_list.SortOrder. A catalog that is not here opens
+# in the first sort order. Satellites open in "Next pass" order: the
+# satellites above the horizon first, then the next passes.
+DEFAULT_SORTS = {"SA": "NEXT_PASS"}
+
 
 def default_display_mode_for(catalog_code: str) -> str:
     """The DisplayModes member name a list of this catalog opens in."""
-    return "NAME" if catalog_code in NAME_MODE_CATALOGS else "LOCATE"
+    if catalog_code in NAME_MODE_CATALOGS:
+        return "NAME"
+    if catalog_code in INFO_MODE_CATALOGS:
+        return "INFO"
+    return "LOCATE"
+
+
+def default_sort_for(catalog_code: str) -> Optional[str]:
+    """The SortOrder member name a list of this catalog opens in, or None
+    for the first sort order."""
+    return DEFAULT_SORTS.get(catalog_code)
+
+
+@dataclass(frozen=True)
+class ObjectLabel:
+    """One text that the left column of an object list can show.
+
+    ``key`` is stored in the config. ``menu_name`` is the English text of the
+    marking menu slot; the UI translates it. ``text`` gives the text of one
+    object.
+    """
+
+    key: str
+    menu_name: str
+    text: Callable[[CompositeObject], str]
 
 
 # collection of all catalog-related classes
@@ -312,6 +349,11 @@ class Catalog(CatalogBase):
         self.initialized = True
         self._last_state: CatalogState = CatalogState.READY
 
+    def touch(self) -> None:
+        """Record a use of the catalog. A screen that shows the objects of
+        the catalog calls this on each update. A dynamic catalog does its
+        work only while it is in use. This catalog does nothing."""
+
     def is_selected(self):
         """
         Convenience function to see if this catalog is in the
@@ -325,6 +367,30 @@ class Catalog(CatalogBase):
     def default_display_mode(self) -> str:
         """The DisplayModes member name this catalog's object list opens in."""
         return default_display_mode_for(self.catalog_code)
+
+    @property
+    def default_sort(self) -> Optional[str]:
+        """The SortOrder member name this catalog's object list opens in, or
+        None for the first sort order."""
+        return default_sort_for(self.catalog_code)
+
+    # The length of the longest list_info_text, in characters, for a
+    # catalog that gives list_info_text for each object. In INFO mode the
+    # right column of the object list is then that wide, and the label gets
+    # the rest of the row. None gives the right column its usual width.
+    list_info_chars: Optional[int] = None
+
+    def list_info_text(self, obj: CompositeObject) -> Optional[str]:
+        """The INFO-mode text of ``obj`` in the right column of the object
+        list. None means the text of the object list: the magnitude and the
+        size."""
+        return None
+
+    def label_options(self) -> List[ObjectLabel]:
+        """The labels that the object list of this catalog can show in its
+        left column. The first label is the default. An empty list means one
+        label: the designation of the object."""
+        return []
 
     def has(self, sequence: int, filtered=True):
         return sequence in self.filtered_objects_seq
@@ -503,6 +569,8 @@ class ArrayCatalog(Catalog):
             return np.full(self.get_count(), NO_DISTANCE)
         if name == "opposition_ordinal":
             return np.full(self.get_count(), NO_OPPOSITION, dtype=np.int64)
+        if name == "next_pass_ts":
+            return np.full(self.get_count(), np.inf)
         if name == "listing_key":
             if self._listing_keys is None:
                 self._listing_keys = (
@@ -979,6 +1047,11 @@ class CatalogBuilder:
             shared_state=shared_state,
         )
         all_catalogs.add(asteroid_catalog)
+
+        from PiFinder.satellite_catalog import SatelliteCatalog
+
+        satellite_catalog: Catalog = SatelliteCatalog(shared_state=shared_state)
+        all_catalogs.add(satellite_catalog)
 
         assert self.check_catalogs_sequences(all_catalogs) is True
         return all_catalogs
