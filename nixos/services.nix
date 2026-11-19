@@ -805,9 +805,11 @@ in {
   # (see hardware.nix — ttyAMA numbering shifts between kernels); USBAUTO lets
   # udev hotplug USB GPSes via gpsdctl. GPSD_SOCKET is intentionally omitted —
   # gpsd's default (/var/run/gpsd.sock) is already what we want.
+  # -n reads the GPS with no client connected, so chrony (time.nix) gets GPS
+  # time before PiFinder starts and while it is stopped.
   environment.etc."default/gpsd".text = ''
     DEVICES="/dev/gpsuart"
-    GPSD_OPTIONS="${lib.optionalString (cfg.gpsBaud != null) "-s ${toString cfg.gpsBaud}"}"
+    GPSD_OPTIONS="-n${lib.optionalString (cfg.gpsBaud != null) " -s ${toString cfg.gpsBaud}"}"
     USBAUTO="true"
   '';
 
