@@ -18,11 +18,12 @@ import numpy as np
 import numpy.typing as npt
 import PiFinder.utils as utils
 from PiFinder.composite_object import MagnitudeObject, SizeObject
-from PiFinder.calc_utils import ra_to_deg, dec_to_deg
+from PiFinder.calc_utils import ra_to_deg, dms_to_dec
 from .catalog_import_utils import (
     delete_catalog_from_database,
     insert_catalog,
     insert_catalog_max_sequence,
+    listing_named,
     NewCatalogObject,
     trim_string,
 )
@@ -172,33 +173,33 @@ def read_lynga_catalog(file_path: Path) -> npt.NDArray:
         ("ClSeq", "i4"),  # Cluster Sequence code
         ("ClNum", "i4"),  # Number inside sequence
         ("RA2000h", "i4"),  # RA 2000 hours
-        ("RA2000m", "f4"),  # RA 2000 minutes
+        ("RA2000m", "f8"),  # RA 2000 minutes
         ("DE2000s", "U1"),  # Dec 2000 sign
         ("DE2000d", "i4"),  # Dec 2000 degrees
         ("DE2000m", "i4"),  # Dec 2000 minutes
-        ("Diam", "f4"),  # Angular diameter (arcmin)
+        ("Diam", "f8"),  # Angular diameter (arcmin)
         ("Dist", "i4"),  # Distance (pc)
-        ("logAge", "f4"),  # log(age) years
-        ("FeH", "f4"),  # Metallicity [Fe/H]
-        ("EBV", "f4"),  # Reddening E(B-V)
+        ("logAge", "f8"),  # log(age) years
+        ("FeH", "f8"),  # Metallicity [Fe/H]
+        ("EBV", "f8"),  # Reddening E(B-V)
         ("ClTyp", "U2"),  # Doubtful cluster flag
         ("TrConc", "i4"),  # Trumpler concentration class
         ("TrRange", "i4"),  # Trumpler range class
         ("TrRich", "U2"),  # Trumpler richness class
         ("TrNeb", "U1"),  # Trumpler nebulosity
-        ("maxBr50", "f4"),  # Brightest star magnitude (ref.50)
-        ("totMag50", "f4"),  # Total magnitude (ref.50)
-        ("totMag422", "f4"),  # Total magnitude (Skiff ref.422)
-        ("iBV422", "f4"),  # Integrated B-V (Skiff)
+        ("maxBr50", "f8"),  # Brightest star magnitude (ref.50)
+        ("totMag50", "f8"),  # Total magnitude (ref.50)
+        ("totMag422", "f8"),  # Total magnitude (Skiff ref.422)
+        ("iBV422", "f8"),  # Integrated B-V (Skiff)
         ("N422", "i4"),  # Number of stars (Skiff)
-        ("wRVel", "f4"),  # Radial velocity weight
+        ("wRVel", "f8"),  # Radial velocity weight
         ("RVel", "i4"),  # Radial velocity (km/s)
         ("Cname", "U9"),  # "C" designation
         ("DistJDL", "i4"),  # jdl distance (pc)
-        ("turnJDL", "f4"),  # jdl turn-off colour
-        ("AgeJDL", "f4"),  # jdl age (Myr)
-        ("EBVJDL", "f4"),  # jdl reddening
-        ("FeHJDL", "f4"),  # jdl abundance
+        ("turnJDL", "f8"),  # jdl turn-off colour
+        ("AgeJDL", "f8"),  # jdl age (Myr)
+        ("EBVJDL", "f8"),  # jdl reddening
+        ("FeHJDL", "f8"),  # jdl abundance
     ]
 
     def parse_field(value: str, field_dtype: str) -> Any:
@@ -207,7 +208,7 @@ def read_lynga_catalog(file_path: Path) -> npt.NDArray:
             return value
         elif field_dtype == "i4":
             return int(value) if value and value not in (".", "-") else 0
-        elif field_dtype == "f4":
+        elif field_dtype == "f8":
             try:
                 return float(value) if value and value not in (".", "-") else np.nan
             except ValueError:
@@ -309,7 +310,14 @@ def identify_catalog_type(name: str) -> Tuple[bool, str]:
     Identify if a name is an official catalog designation or a common name.
 
     Official catalogs in the system: NGC, IC, M, C, Col, Ta2, H, SaA, SaM,
-    SaR, Str, EGC, RDS, B, Sh2, Abl, Arp, TLK, WDS
+    SaR, Str, EGC, RDS, B, Sh2, Abl, Arp, TLK, WDS. Lyngå spells Collinder
+    out ("Collinder 65"), so that long form is a designation too, and the
+    listing joins its Collinder sky object.
+
+    A designation the loaders' lookup reads (listing_named) is written as
+    PiFinder writes its designators, so "Collinder 65" is "Col 65" and
+    "NGC 6222" stays "NGC 6222": on the sky object the listing joins, it
+    repeats that listing's own name. Any other has its spaces removed.
 
     Args:
         name: Name to check
@@ -323,6 +331,7 @@ def identify_catalog_type(name: str) -> Tuple[bool, str]:
         "M",
         "C",
         "Col",
+        "Collinder",
         "Ta2",
         "H",
         "SaA",
@@ -343,8 +352,11 @@ def identify_catalog_type(name: str) -> Tuple[bool, str]:
 
     for catalog in official_catalogs:
         if name.startswith(catalog + " ") or name == catalog:
-            normalized = name.replace(" ", "")
-            return True, normalized
+            listing = listing_named(name)
+            if listing is None:
+                return True, name.replace(" ", "")
+            catalog_code, sequence = listing
+            return True, f"{catalog_code} {sequence}"
 
     return False, name
 
@@ -377,11 +389,14 @@ def create_cluster_object(entry: npt.NDArray, seq: int) -> Dict[str, Any]:
     ra_m = entry["RA2000m"].item()
     result["ra"] = ra_to_deg(ra_h, ra_m, 0.0)
 
-    dec_d = entry["DE2000d"].item()
-    if entry["DE2000s"] == "-":
-        dec_d = -dec_d
-    dec_m = entry["DE2000m"].item()
-    result["dec"] = dec_to_deg(dec_d, dec_m, 0)
+    # The sign is a column of its own, so a declination between -1° and 0°
+    # (Lyn 229 at -00 54) stays south: negating 0 degrees would lose it.
+    result["dec"] = dms_to_dec(
+        entry["DE2000s"].item(),
+        entry["DE2000d"].item(),
+        entry["DE2000m"].item(),
+        0,
+    )
 
     if VERBOSE:
         logging.debug(
