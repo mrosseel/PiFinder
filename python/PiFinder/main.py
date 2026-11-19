@@ -40,6 +40,7 @@ from PiFinder import keyboard_interface
 from PiFinder import usb_gps
 from PiFinder import lazy_import
 import PiFinder.sound as sound
+from PiFinder.types.mount import keeps_awake
 from PiFinder.types.sound import Earcon, SetVolume
 from PiFinder.battery_bq25895 import (
     POLL_INTERVAL as BATTERY_POLL_INTERVAL,
@@ -48,6 +49,7 @@ from PiFinder.battery_bq25895 import (
 
 from PiFinder.multiproclogging import MultiprocLogging
 from PiFinder.catalogs import CatalogBuilder, CatalogFilter, Catalogs
+from PiFinder.satellite_catalog import SatelliteCatalog
 from PiFinder.calc_utils import sf_utils
 from PiFinder.state_utils import sleep_for_framerate
 from PiFinder.state_snapshot import SnapshotBlock, StateReader, attach_writer
@@ -55,6 +57,7 @@ from PiFinder.state_snapshot import SnapshotBlock, StateReader, attach_writer
 from PiFinder.ui.console import UIConsole
 from PiFinder.ui.base import CurrentSnapshot, UIModule
 from PiFinder.ui.menu_manager import MenuManager
+from PiFinder.ui import sat_groups
 
 from PiFinder.state import SharedStateObj, UIState
 
@@ -499,20 +502,39 @@ HOLD_DIRECTIONS = {
     keyboard_interface.KeyboardInterface.HOLD_RIGHT: "right",
 }
 
+
+def must_stay_awake(menu_manager, snapshot) -> bool:
+    """True while the screen on top or a mount follow must keep the
+    PiFinder awake. A key press that wakes the PiFinder does nothing else,
+    so a sleep during a follow would lose the "I see it" press at the meet
+    point."""
+    return menu_manager.keep_awake() or keeps_awake(snapshot.mount_status())
+
+
 # Seconds on screen of a [kind, text] console message, by kind.
-STATUS_MESSAGE_SECONDS = {"WARNING": 3.0, "MOUNT": 1.5}
+STATUS_MESSAGE_SECONDS = {"WARNING": 3.0, "MOUNT": 1.5, "CONFIRM": 2.0}
+# Seconds on screen of a console message of three lines or more.
+LONG_MESSAGE_SECONDS = 6.0
 
 
 def show_status_message(menu_manager, console, message) -> None:
     """Show a [kind, text] message from a worker process on the screen,
-    and keep it in the console log. Kinds: "WARNING" (a fault) and
-    "MOUNT" (mount control progress)."""
+    and keep it in the console log. Kinds: "WARNING" (a fault), "MOUNT"
+    (mount control progress) and "CONFIRM" (the mount accepted a user
+    input, for example "Seen"). The mount page hides "MOUNT" only."""
     kind, text = str(message[0]), str(message[1])
     console.write(f"{kind}: {text}")
     # The mount page shows mount progress in its status band.
     if kind == "MOUNT" and getattr(menu_manager.stack[-1], "shows_mount_status", False):
         return
-    menu_manager.message(text, STATUS_MESSAGE_SECONDS.get(kind, 2.0))
+    seconds = STATUS_MESSAGE_SECONDS.get(kind, 2.0)
+    lines = text.count("\n") + 1
+    if lines > 2:
+        # A longer message gets a larger box and more time.
+        size = sat_groups.message_box(menu_manager.stack[-1], lines)
+        menu_manager.message(text, max(seconds, LONG_MESSAGE_SECONDS), size=size)
+        return
+    menu_manager.message(text, seconds)
 
 
 def main(
@@ -874,6 +896,26 @@ def main(
         _new_filter = CatalogFilter(shared_state=CurrentSnapshot())
         _new_filter.load_from_config(cfg)
         catalogs.set_catalog_filter(_new_filter)
+
+        # The result of a satellite download that the user asked for with
+        # "Update now" in the Sat groups menu shows on any screen.
+        satellite_catalog = catalogs.get_catalog_by_code("SA")
+        if isinstance(satellite_catalog, SatelliteCatalog):
+            satellite_catalog.on_refresh_done = sat_groups.downloads.post_result
+
+        # Initialize Gaia chart generator in background to avoid first-use delay
+        console.write("   Gaia Charts")
+        console.update()
+        logger.info("   Initializing Gaia chart generator...")
+        from PiFinder.object_images.gaia_chart import get_gaia_chart_generator
+
+        # The generator only reads location and SQM, so it gets the view of
+        # the current frame's snapshot, not the shared-state proxy.
+        chart_gen = get_gaia_chart_generator(cfg, CurrentSnapshot())
+        # Trigger background loading so catalog is ready when needed
+        chart_gen.ensure_catalog_loading()
+        logger.info("   Gaia chart background loading started")
+
         console.write("   Menus")
         console.update()
 
@@ -1067,6 +1109,9 @@ def main(
                     # this is the only clock it can safely subtract.
                     shared_state.set_gps_comms((gps_pending.pop("comms"), gps_now))
 
+                # Gaia catalog loading removed - now lazy-loads on first chart view
+                # (object_images triggers loading when needed)
+
                 # ui queue
                 try:
                     ui_command = ui_queue.get(block=False)
@@ -1136,6 +1181,9 @@ def main(
                 # Monotonic clock: a backwards GPS/NTP time step must not
                 # silence the watcher (same reason PlayEarcon stamps
                 # monotonic, see ADR 0008).
+                # A satellite download result waits for the end of the
+                # message on the screen, then shows on any screen.
+                sat_groups.show_next_message(menu_manager)
                 if time.monotonic() - last_battery_watch >= BATTERY_POLL_INTERVAL:
                     last_battery_watch = time.monotonic()
                     battery_state = shared_state.battery()
@@ -1340,7 +1388,9 @@ def main(
                             menu_manager.key_right()
 
                 menu_manager.update()
-                power_manager.update(keep_awake=menu_manager.keep_awake())
+                power_manager.update(
+                    keep_awake=must_stay_awake(menu_manager, UIModule.snapshot)
+                )
                 display_device.tick()
 
         except KeyboardInterrupt:
@@ -1630,13 +1680,18 @@ if __name__ == "__main__":
         rlogger.warn("not using camera")
         from PiFinder import camera_none as camera  # type: ignore[no-redef]
 
-    if args.keyboard.lower() == "pi":
-        from PiFinder import keyboard_pi as keyboard
+    # When using Pygame display, use built-in event polling (no keyboard subprocess needed)
+    if display_hardware in ["pg_128", "pg_320"]:
+        from PiFinder import keyboard_none as keyboard
+
+        rlogger.info("using pygame built-in keyboard (no subprocess)")
+    elif args.keyboard.lower() == "pi":
+        from PiFinder import keyboard_pi as keyboard  # type: ignore[no-redef]
 
         rlogger.info("using pi keyboard hat")
     elif args.keyboard.lower() == "local":
         if display_hardware.startswith("pg_"):
-            from PiFinder import keyboard_none as keyboard  # type: ignore[no-redef]
+            from PiFinder import keyboard_none as keyboard
 
             rlogger.info("using pygame keyboard (main loop captures keys)")
         else:
@@ -1644,7 +1699,7 @@ if __name__ == "__main__":
 
             rlogger.info("using local keyboard")
     elif args.keyboard.lower() == "none":
-        from PiFinder import keyboard_none as keyboard  # type: ignore[no-redef]
+        from PiFinder import keyboard_none as keyboard
 
         rlogger.warning("using no keyboard")
 

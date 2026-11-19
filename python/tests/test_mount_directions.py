@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from PiFinder.cat_images import cardinal_vectors
+from PiFinder.object_images.image_utils import cardinal_vectors
 from PiFinder.mount_settings import MountSettings
 from PiFinder.mountcontrol_indi import MountControlIndi
 from PiFinder.state import SharedStateObj

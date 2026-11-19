@@ -16,6 +16,7 @@ A source has ``len()``, ``row(i)`` (the object for row i) and
 are in ``COLUMNS``.
 """
 
+import datetime
 import threading
 from collections.abc import Sequence
 from typing import Any, Dict, Iterable, List, Optional
@@ -36,7 +37,15 @@ COLUMNS = (
     "logged",
     "catalog_code",
     "listing_key",
+    "earth_distance_au",
+    "opposition_ordinal",
+    "next_pass_ts",
 )
+
+# Column values for an object without a distance or an opposition date, so
+# that such objects sort last.
+NO_DISTANCE = np.inf
+NO_OPPOSITION = datetime.date.max.toordinal()
 
 _code_ids: Dict[str, int] = {}
 _code_ids_lock = threading.Lock()
@@ -82,6 +91,20 @@ class ListSource:
             return np.array([bool(obj.logged) for obj in objects], dtype=bool)
         if name == "listing_key":
             return listing_keys(self.column("catalog_code"), self.column("sequence"))
+        if name == "earth_distance_au":
+            distances = (getattr(obj, "earth_distance_au", None) for obj in objects)
+            return np.array(
+                [NO_DISTANCE if d is None else d for d in distances], dtype=float
+            )
+        if name == "opposition_ordinal":
+            dates = (getattr(obj, "opposition_date", None) for obj in objects)
+            return np.array(
+                [NO_OPPOSITION if d is None else d.toordinal() for d in dates],
+                dtype=np.int64,
+            )
+        if name == "next_pass_ts":
+            times = (getattr(obj, "next_pass_ts", None) for obj in objects)
+            return np.array([np.inf if t is None else t for t in times], dtype=float)
         raise KeyError(name)
 
 

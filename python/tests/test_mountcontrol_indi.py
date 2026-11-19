@@ -17,10 +17,20 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from PiFinder import indi_drivers, mountcontrol_indi
+from PiFinder import indi_drivers, mountcontrol_indi, satellites, track_rates
+from PiFinder.calc_utils import FastAltAz
+from PiFinder.mount_rate_signs import RateSignStore
 from PiFinder.mount_settings import MountSettings
 from PiFinder.mountcontrol_indi import POSITION, MountControlIndi
-from PiFinder.mountcontrol_interface import MountControlPhases
+from PiFinder.mountcontrol_interface import MountControlPhases, angular_distance
+from PiFinder.target_follow import (
+    MEET_SEARCH_MINUTES,
+    FollowPoint,
+    FollowStage,
+    SatelliteTarget,
+    find_pass,
+    meet_point,
+)
 from PiFinder.sky_sim import SkySimSettings, SkySimulator
 from PiFinder.types.positioning import (
     PointingAxis,
@@ -332,13 +342,16 @@ def test_reload_switches_model_and_turns_off(indi: int) -> None:
         indi_drivers.stop_driver()
 
 
-def _simulator_mount(indi: int) -> MountControlIndi:
+def _simulator_mount(
+    indi: int, rate_sign_store: Optional[RateSignStore] = None
+) -> MountControlIndi:
     return MountControlIndi(
         Queue(),
         Queue(),
         _shared_state(),
         None,
         MountSettings(enabled=True, model=indi_drivers.SIMULATOR),
+        rate_sign_store=rate_sign_store,
         indi_port=indi,
     )
 
@@ -412,6 +425,48 @@ def test_drift_correction_reverses_an_axis_rate(indi: int) -> None:
             5,
         )
         assert not any("Cannot reverse" in m for m in mount.client.messages(device))
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_follow_rates_reverse_the_dec_axis_and_tracking_turns_off(indi: int) -> None:
+    """A follow that reverses the Dec rate must reach the driver, and a
+    follow without custom rates can turn the tracking off and on."""
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        device = mount.device
+        assert _wait(
+            lambda: mount.client.get_value(device, "TELESCOPE_TRACK_STATE", "TRACK_ON")
+            is True,
+            10,
+        )
+
+        def dec_rate() -> object:
+            return mount.client.get_value(
+                device, "TELESCOPE_TRACK_RATE", "TRACK_RATE_DE"
+            )
+
+        assert mount.set_track_rates(0.0, 0.001)
+        first = 3.6 * mount.rate_signs.dec.sign
+        assert _wait(lambda: dec_rate() == pytest.approx(first, abs=0.01), 5)
+        assert mount.set_track_rates(0.0, -0.001)
+        assert _wait(lambda: dec_rate() == pytest.approx(-first, abs=0.01), 5)
+        assert not any("Cannot reverse" in m for m in mount.client.messages(device))
+
+        assert mount.set_tracking(False)
+        assert _wait(
+            lambda: mount.client.get_value(device, "TELESCOPE_TRACK_STATE", "TRACK_OFF")
+            is True,
+            5,
+        )
+        assert mount.set_tracking(True)
+        assert _wait(
+            lambda: mount.client.get_value(device, "TELESCOPE_TRACK_STATE", "TRACK_ON")
+            is True,
+            5,
+        )
     finally:
         mount.disconnect_mount()
         indi_drivers.stop_driver()
@@ -780,6 +835,311 @@ def test_continuous_move_north_until_stop(indi: int) -> None:
         indi_drivers.stop_driver()
 
 
+def _follow_rates(mount, ra_rate: float, dec_rate: float, seconds: float):
+    """Set the rates once a second, as the target follow does, and return
+    the rates measured in the last two seconds."""
+    end = time.time() + seconds
+    while time.time() < end - 2.0:
+        assert mount.set_track_rates(ra_rate, dec_rate)
+        time.sleep(1.0)
+    start = (time.time(), mount.current_ra, mount.current_dec)
+    assert mount.set_track_rates(ra_rate, dec_rate)
+    time.sleep(2.0)
+    elapsed = time.time() - start[0]
+    return (
+        ((mount.current_ra - start[1] + 540) % 360 - 180) / elapsed,
+        (mount.current_dec - start[2]) / elapsed,
+    )
+
+
+def _hour_angle_ra(hour_angle: float) -> float:
+    """The RA (degrees) at this hour angle for the simulator, now."""
+    location = _shared_state().location()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    lst = FastAltAz(location.lat, location.lon, now).local_siderial_time
+    return (lst - hour_angle) % 360
+
+
+def _dec_after_rates(mount, dec_rate: float, seconds: float) -> list[float]:
+    """Set the rate once a second, as the target follow does. Returns the
+    Dec after each second."""
+    decs = []
+    for _second in range(int(seconds)):
+        assert mount.set_track_rates(0.0, dec_rate)
+        time.sleep(1.0)
+        decs.append(mount.current_dec)
+    return decs
+
+
+def _visit(mount, hour_angle: float, seconds: int) -> tuple[float, list[float]]:
+    """Goto the hour angle, wait with sidereal tracking, then a Dec rate of
+    0.1°/s. Returns the Dec before the rate and after each second."""
+    mount.target_reached = False
+    assert mount.move_mount_to_target(_hour_angle_ra(hour_angle), 10.0)
+    assert _wait(lambda: mount.target_reached, 90)
+    mount.restore_sidereal_tracking()
+    time.sleep(3.0)
+    start = mount.current_dec
+    decs = _dec_after_rates(mount, 0.1, seconds)
+    mount.restore_sidereal_tracking()
+    return start, decs
+
+
+def test_fast_dec_rate_has_one_sign_for_each_pier_side(
+    indi: int, tmp_path: Path
+) -> None:
+    """The simulator turns the Dec direction of a custom rate with the pier
+    side (west at hour angle -60°, east at +60°). After a sidereal wait, in
+    which the driver sends no position, a fast Dec rate moves the right way
+    within two seconds on a side without a stored sign. Two measurements
+    with the request store the sign of that side. A side with a stored sign
+    moves the right way from the start, also after a new connection."""
+    store = RateSignStore(tmp_path / "signs.json")
+    mount = _simulator_mount(indi, store)
+    try:
+        assert mount.init_mount()
+        for hour_angle, pier in ((-60.0, "PIER_WEST"), (60.0, "PIER_EAST")):
+            _start, decs = _visit(mount, hour_angle, 6)
+            assert mount.pier_side() == pier
+            # Wrong for at most the first second, then 0.1°/s north.
+            assert decs[-1] - decs[1] == pytest.approx(0.4, abs=0.05), (pier, decs)
+        stored = store.load(indi_drivers.SIMULATOR)
+        # The RA rate is zero, so only the Dec sign is known.
+        assert stored == {"PIER_WEST": [None, -1.0], "PIER_EAST": [None, 1.0]}
+        # Back on the west side: the stored sign at once.
+        start, decs = _visit(mount, -60.0, 3)
+        assert decs[0] - start == pytest.approx(0.1, abs=0.04), decs
+        assert decs[-1] - start == pytest.approx(0.3, abs=0.05), decs
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+    # A new connection reads the stored signs.
+    mount = _simulator_mount(indi, store)
+    try:
+        assert mount.init_mount()
+        for hour_angle in (60.0, -60.0):
+            start, decs = _visit(mount, hour_angle, 2)
+            assert decs[0] - start == pytest.approx(0.1, abs=0.04), decs
+            assert decs[-1] - start == pytest.approx(0.2, abs=0.05), decs
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_satellite_track_rates_move_the_mount_at_those_rates(indi: int) -> None:
+    """set_track_rates gives absolute RA/Dec rates in both directions; it
+    learns the sign convention of the driver from the motion."""
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        assert mount.move_mount_to_target(40.0, 10.0)
+        assert _wait(lambda: mount.target_reached, 60)
+        ra_rate, dec_rate = _follow_rates(mount, 0.05, 0.02, 10.0)
+        assert ra_rate == pytest.approx(0.05, abs=0.01)
+        assert dec_rate == pytest.approx(0.02, abs=0.01)
+        ra_rate, dec_rate = _follow_rates(mount, -0.05, -0.02, 8.0)
+        assert ra_rate == pytest.approx(-0.05, abs=0.01)
+        assert dec_rate == pytest.approx(-0.02, abs=0.01)
+        mount.restore_sidereal_tracking()
+        assert _wait(
+            lambda: mount.client.get_value(
+                mount.device, "TELESCOPE_TRACK_MODE", "TRACK_SIDEREAL"
+            )
+            is True,
+            5,
+        )
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_follow_a_moving_target_end_to_end(indi: int, monkeypatch) -> None:
+    """The target follow with the simulator: aim ahead, wait, then track a
+    target that moves 0.03°/s in RA and 0.01°/s in Dec."""
+    t0 = time.time()
+
+    def point(_self, unix_time: float) -> FollowPoint:
+        seconds = unix_time - t0
+        return FollowPoint(
+            ra=(60.0 + 0.03 * seconds) % 360.0,
+            dec=20.0 + 0.01 * seconds,
+            ra_rate=0.03,
+            dec_rate=0.01,
+            alt=45.0,
+        )
+
+    monkeypatch.setattr(SatelliteTarget, "point", point)
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        mount.state = MountControlPhases.MOUNT_TRACKING
+        mount.clock = time.time
+        element = satellites.parse_elements(
+            (Path(__file__).parent / "data" / "satellites" / "25544.3le").read_text()
+        )[0][0]
+        for _step in mount._process_command(
+            {
+                "type": "follow_target",
+                "kind": "satellite",
+                "name": "TEST",
+                "line1": element.line1,
+                "line2": element.line2,
+            }
+        ):
+            pass
+        assert mount.state == MountControlPhases.MOUNT_TARGET_FOLLOW
+        follow = mount._follow
+        tracking_since = None
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            mount._follow_step(time.time())
+            if follow.stage == FollowStage.TRACK and tracking_since is None:
+                tracking_since = time.time()
+            if tracking_since and time.time() - tracking_since > 20:
+                break
+            time.sleep(0.1)
+        assert tracking_since is not None, follow.stage
+        target = point(None, mount.current_time)
+        error = angular_distance(
+            mount.current_ra, mount.current_dec, target.ra, target.dec
+        )
+        assert error < 0.05
+        assert mount._follow is follow and follow.aim_count <= 2
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_follow_waits_at_the_meet_point_then_tracks(indi: int) -> None:
+    """The ISS of the fixture elements, low and rising at the press: the
+    mount slews to the meet point, waits there with the sidereal tracking,
+    and tracks at the meet time. The follow clock is some seconds before
+    the meet time of a known pass."""
+    element = satellites.parse_elements(
+        (Path(__file__).parent / "data" / "satellites" / "25544.3le").read_text()
+    )[0][0]
+    location = _shared_state().location()
+    target = SatelliteTarget(element, location.lat, location.lon, location.altitude)
+    search = datetime.datetime(2026, 11, 11, 20, 38, tzinfo=datetime.timezone.utc)
+    item = find_pass(target, search.timestamp(), MEET_SEARCH_MINUTES)
+    assert item is not None
+    meet = meet_point(target, item)
+    shift = meet.time - 50.0 - time.time()
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        mount.state = MountControlPhases.MOUNT_TRACKING
+        mount.clock = lambda: time.time() + shift
+        assert 0.0 < target.point(mount.clock()).alt < 15.0
+        for _step in mount._process_command(
+            {
+                "type": "follow_target",
+                "kind": "satellite",
+                "name": element.name,
+                "line1": element.line1,
+                "line2": element.line2,
+            }
+        ):
+            pass
+        assert mount.state == MountControlPhases.MOUNT_TARGET_FOLLOW
+        follow = mount._follow
+        assert follow.meet is not None
+        assert follow.meet.time == pytest.approx(meet.time)
+        texts = set()
+        at_meet = None
+        tracking_since = None
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            now = mount.clock()
+            stage = follow.stage
+            mount._follow_step(now)
+            texts.add(mount.status_text().split(" ")[0])
+            if stage == FollowStage.WAIT and follow.stage == FollowStage.TRACK:
+                tracking_since = time.time()
+                at_meet = angular_distance(
+                    mount.current_ra, mount.current_dec, follow.aim_ra, follow.aim_dec
+                )
+            if tracking_since and time.time() - tracking_since > 15:
+                break
+            time.sleep(0.1)
+        assert tracking_since is not None, follow.stage
+        assert "Meet" in texts
+        # The sidereal tracking held the meet point during the wait.
+        assert at_meet is not None and at_meet < 0.05
+        assert mount._follow is follow and follow.aim_count == 1
+        point = follow.point(mount._position_time(mount.clock()))
+        error = angular_distance(
+            mount.current_ra, mount.current_dec, point.ra, point.dec
+        )
+        assert error < 0.2
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_lunar_rate_uses_the_indi_track_mode(indi: int) -> None:
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        assert mount.apply_track_rate(track_rates.LUNAR)
+        assert _wait(
+            lambda: mount.client.get_value(
+                mount.device, "TELESCOPE_TRACK_MODE", "TRACK_LUNAR"
+            )
+            is True,
+            5,
+        )
+        assert mount.apply_track_rate(track_rates.SIDEREAL)
+        assert _wait(
+            lambda: mount.client.get_value(
+                mount.device, "TELESCOPE_TRACK_MODE", "TRACK_SIDEREAL"
+            )
+            is True,
+            5,
+        )
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
+def test_lunar_rate_as_custom_rates_without_the_track_mode(
+    indi: int, monkeypatch
+) -> None:
+    """A driver without TRACK_LUNAR gets the motion of the Moon as custom
+    rates: the RA of the mount grows by about half an arcsecond a second."""
+    monkeypatch.setitem(track_rates.INDI_TRACK_MODES, track_rates.LUNAR, "NONE")
+    mount = _simulator_mount(indi)
+    try:
+        assert mount.init_mount()
+        assert mount.move_mount_to_target(40.0, 10.0)
+        assert _wait(lambda: mount.target_reached, 60)
+        assert mount.apply_track_rate(track_rates.LUNAR)
+        location = mount.shared_state.location()
+        moon_ra, _moon_dec = track_rates.body_rates(
+            track_rates.LUNAR,
+            location.lat,
+            location.lon,
+            location.altitude,
+            mount.shared_state.datetime(),
+        )
+        assert _wait(
+            lambda: mount.client.get_value(
+                mount.device, "TELESCOPE_TRACK_RATE", "TRACK_RATE_RA"
+            )
+            == pytest.approx(15.041067 - moon_ra * 3600.0, abs=0.01),
+            5,
+        )
+        time.sleep(1.5)
+        start = (mount.current_time, mount.current_ra)
+        time.sleep(8.0)
+        ra_rate = (mount.current_ra - start[1]) / (mount.current_time - start[0])
+        assert ra_rate * 3600 == pytest.approx(moon_ra * 3600, abs=0.2)
+    finally:
+        mount.disconnect_mount()
+        indi_drivers.stop_driver()
+
+
 def _solve_drift(solves: list, seconds: float) -> tuple[float, float]:
     """RA and Dec drift in arcseconds per second of the solves of the last
     ``seconds``, by a straight line fit."""
@@ -872,9 +1232,9 @@ def test_drift_compensation_removes_a_drift(indi: int, case: str) -> None:
             feed(0.2)
         assert mount.state == MountControlPhases.MOUNT_DRIFT_COMPENSATION
         if wrong_axis == "ra":
-            mount._ra_rate_sign = -mount._ra_rate_sign
+            mount.rate_signs.ra.sign = -mount.rate_signs.ra.sign
         if wrong_axis == "dec":
-            mount._dec_rate_sign = -mount._dec_rate_sign
+            mount.rate_signs.dec.sign = -mount.rate_signs.dec.sign
         # No correction while the drift is measured.
         mount.drift_compensation_window = 1000.0
         # The drift: custom rates that the mount process does not know.

@@ -4,8 +4,9 @@ import time
 import datetime
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pprint import pformat
-from typing import List, Dict, Optional, Union
+from typing import Callable, List, Dict, Optional, Union
 
 import numpy as np
 
@@ -31,7 +32,13 @@ from PiFinder.catalog_arrays import (  # noqa: F401  (public keypad maps)
     CatalogColumns,
     name_to_t9_digits,
 )
-from PiFinder.object_sequence import ListSource, ObjectSequence, catalog_code_id
+from PiFinder.object_sequence import (
+    NO_DISTANCE,
+    NO_OPPOSITION,
+    ListSource,
+    ObjectSequence,
+    catalog_code_id,
+)
 from PiFinder import timez
 
 logger = logging.getLogger("Catalog")
@@ -40,16 +47,52 @@ logger = logging.getLogger("Catalog")
 # code. The values name members of ui.object_list.DisplayModes. These catalogs
 # open in NAME mode: their sequence is only a position in the list, and an
 # observer knows the object by its name (Algol, RX Peg, Winter Triangle). All
-# other catalogs open in LOCATE mode. The registry is in code, not in
-# objects.db, because planets and comets are built at run time.
+# other catalogs open in LOCATE mode, except the INFO_MODE_CATALOGS. The
+# registry is in code, not in objects.db, because planets, comets and
+# satellites are built at run time.
 NAME_MODE_CATALOGS = frozenset(
     {"PL", "CM", "Str", "Nam", "SaA", "SaR", "TLK", "SaM", "RDS", "WDS"}
 )
 
+# These catalogs open in INFO mode. The left column of the satellite list
+# ("SA") shows the name, and INFO mode shows where the satellite is (see
+# Catalog.list_info_text).
+INFO_MODE_CATALOGS = frozenset({"SA"})
+
+# The sort order a list of the catalog opens in, by catalog code. The values
+# name members of ui.object_list.SortOrder. A catalog that is not here opens
+# in the first sort order. Satellites open in "Next pass" order: the
+# satellites above the horizon first, then the next passes.
+DEFAULT_SORTS = {"SA": "NEXT_PASS"}
+
 
 def default_display_mode_for(catalog_code: str) -> str:
     """The DisplayModes member name a list of this catalog opens in."""
-    return "NAME" if catalog_code in NAME_MODE_CATALOGS else "LOCATE"
+    if catalog_code in NAME_MODE_CATALOGS:
+        return "NAME"
+    if catalog_code in INFO_MODE_CATALOGS:
+        return "INFO"
+    return "LOCATE"
+
+
+def default_sort_for(catalog_code: str) -> Optional[str]:
+    """The SortOrder member name a list of this catalog opens in, or None
+    for the first sort order."""
+    return DEFAULT_SORTS.get(catalog_code)
+
+
+@dataclass(frozen=True)
+class ObjectLabel:
+    """One text that the left column of an object list can show.
+
+    ``key`` is stored in the config. ``menu_name`` is the English text of the
+    marking menu slot; the UI translates it. ``text`` gives the text of one
+    object.
+    """
+
+    key: str
+    menu_name: str
+    text: Callable[[CompositeObject], str]
 
 
 # collection of all catalog-related classes
@@ -93,6 +136,10 @@ class CatalogFilter:
         self._constellations = constellations
         self._selected_catalogs = set(selected_catalogs)
         self.last_filtered_time = 0
+        # Dynamic catalogs can replace their objects without changing the
+        # active filter criteria. Wake open lists without invalidating every
+        # unchanged catalog's cached result.
+        self._catalog_content_dirty = False
         # Whether alt/az was available when verdicts were last computed.
         # Verdicts computed without it skip the altitude test entirely, so
         # they go stale the moment a fix arrives (see is_stale).
@@ -109,10 +156,17 @@ class CatalogFilter:
         self._constellations = config_object.get_option("filter.constellations", [])
         self._selected_catalogs = config_object.get_option("filter.selected_catalogs")
         self.last_filtered_time = 0
+        self._catalog_content_dirty = False
 
     def mark_dirty(self):
         """Mark the filter as dirty, triggering a re-filter on next check"""
         self.dirty_time = time.time()
+
+    def mark_catalog_content_dirty(self) -> None:
+        self._catalog_content_dirty = True
+
+    def clear_catalog_content_dirty(self) -> None:
+        self._catalog_content_dirty = False
 
     @property
     def magnitude(self):
@@ -189,6 +243,8 @@ class CatalogFilter:
         parameter changed since the last filter (dirty), or time-sensitive
         criteria have aged out (stale — see is_stale).  False if not
         """
+        if self._catalog_content_dirty:
+            return True
         if self.last_filtered_time > self.dirty_time:
             return self.is_stale()
         else:
@@ -293,6 +349,15 @@ class Catalog(CatalogBase):
         self.initialized = True
         self._last_state: CatalogState = CatalogState.READY
 
+    def touch(self) -> None:
+        """Record a use of the catalog. A screen that shows the objects of
+        the catalog calls this on each update. A dynamic catalog does its
+        work only while it is in use. This catalog does nothing."""
+
+    def prepare_search(self) -> None:
+        """Make the objects ready for a name search. A dynamic catalog that
+        has no objects yet builds them. This catalog does nothing."""
+
     def is_selected(self):
         """
         Convenience function to see if this catalog is in the
@@ -306,6 +371,30 @@ class Catalog(CatalogBase):
     def default_display_mode(self) -> str:
         """The DisplayModes member name this catalog's object list opens in."""
         return default_display_mode_for(self.catalog_code)
+
+    @property
+    def default_sort(self) -> Optional[str]:
+        """The SortOrder member name this catalog's object list opens in, or
+        None for the first sort order."""
+        return default_sort_for(self.catalog_code)
+
+    # The length of the longest list_info_text, in characters, for a
+    # catalog that gives list_info_text for each object. In INFO mode the
+    # right column of the object list is then that wide, and the label gets
+    # the rest of the row. None gives the right column its usual width.
+    list_info_chars: Optional[int] = None
+
+    def list_info_text(self, obj: CompositeObject) -> Optional[str]:
+        """The INFO-mode text of ``obj`` in the right column of the object
+        list. None means the text of the object list: the magnitude and the
+        size."""
+        return None
+
+    def label_options(self) -> List[ObjectLabel]:
+        """The labels that the object list of this catalog can show in its
+        left column. The first label is the default. An empty list means one
+        label: the designation of the object."""
+        return []
 
     def has(self, sequence: int, filtered=True):
         return sequence in self.filtered_objects_seq
@@ -349,6 +438,12 @@ class Catalog(CatalogBase):
         self.last_filtered = time.time()
         return self.filtered_objects
 
+    def invalidate_filter_cache(self) -> None:
+        """Invalidate only this catalog after its runtime objects change."""
+        self.last_filtered = 0
+        for obj in self._get_objects():
+            obj.last_filtered_time = 0
+
     def get_filtered_objects(self):
         return self.filtered_objects
 
@@ -363,6 +458,10 @@ class Catalog(CatalogBase):
 
     def get_age(self) -> Optional[int]:
         """If the catalog data is time-sensitive, return age in days."""
+        return None
+
+    def get_data_label(self) -> Optional[str]:
+        """Optional compact source-edition label for object-list headers."""
         return None
 
     def get_status(self) -> CatalogStatus:
@@ -470,6 +569,12 @@ class ArrayCatalog(Catalog):
             return self.logged
         if name == "catalog_code":
             return np.full(self.get_count(), self.catalog_code)
+        if name == "earth_distance_au":
+            return np.full(self.get_count(), NO_DISTANCE)
+        if name == "opposition_ordinal":
+            return np.full(self.get_count(), NO_OPPOSITION, dtype=np.int64)
+        if name == "next_pass_ts":
+            return np.full(self.get_count(), np.inf)
         if name == "listing_key":
             if self._listing_keys is None:
                 self._listing_keys = (
@@ -586,6 +691,8 @@ class Catalogs:
             self.catalog_filter.calc_fast_aa(self.catalog_filter.shared_state)
         for catalog in self.__catalogs if catalogs is None else catalogs:
             catalog.filter_objects()
+        if self.catalog_filter is not None:
+            self.catalog_filter.clear_catalog_content_dirty()
 
     def mark_logged(self, obj: CompositeObject) -> None:
         """
@@ -689,6 +796,7 @@ class Catalogs:
             return ObjectSequence()
         parts = []
         for catalog in self.__catalogs:
+            catalog.prepare_search()
             if isinstance(catalog, ArrayCatalog):
                 parts.append(catalog.search(field, pattern))
             else:
@@ -823,7 +931,6 @@ class PlanetCatalog(Catalog):
 
         if not planet_dict:
             logger.debug("No GPS lock during initialization - will retry soon")
-            self.initialised = True  # Still mark as initialized so timer starts
             return
 
         sequence = 0
@@ -869,6 +976,7 @@ class PlanetCatalog(Catalog):
             dt = self.shared_state.datetime()
             if not self.initialized:
                 self.init_planets(dt)
+                return
 
             planet_dict = sf_utils.calc_planets(dt)
 
@@ -890,6 +998,9 @@ class PlanetCatalog(Catalog):
                         obj.mag_str = obj.mag.calc_two_mag_representation()
                 except (KeyError, ValueError) as e:
                     logger.error(f"Error updating planet {name}: {e}")
+            self.invalidate_filter_cache()
+            if self.catalog_filter is not None:
+                self.catalog_filter.mark_catalog_content_dirty()
 
 
 class CatalogBuilder:
@@ -933,7 +1044,30 @@ class CatalogBuilder:
             shared_state=shared_state,
         )
         all_catalogs.add(comet_catalog)
+
+        from PiFinder.asteroid_catalog import AsteroidCatalog
+
+        asteroid_catalog: Catalog = AsteroidCatalog(
+            timez.utc_now(),
+            shared_state=shared_state,
+        )
+        all_catalogs.add(asteroid_catalog)
+
+        from PiFinder.satellite_catalog import SatelliteCatalog
+
+        satellite_catalog: Catalog = SatelliteCatalog(shared_state=shared_state)
+        all_catalogs.add(satellite_catalog)
+
+        assert self.check_catalogs_sequences(all_catalogs) is True
         return all_catalogs
+
+    def check_catalogs_sequences(self, catalogs: Catalogs):
+        for catalog in catalogs.get_catalogs(only_selected=False):
+            result = catalog.check_sequences()
+            if not result:
+                logger.error("Duplicate sequence catalog %s!", catalog.catalog_code)
+                return False
+        return True
 
     @staticmethod
     def _logged(columns: CatalogColumns, obs_db: ObservationsDatabase) -> np.ndarray:

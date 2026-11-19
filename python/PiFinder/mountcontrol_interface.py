@@ -7,6 +7,7 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
+import datetime
 import logging
 import math
 from enum import Enum, auto
@@ -14,10 +15,15 @@ import queue
 from multiprocessing import Queue
 import sys
 import time
-from typing import TYPE_CHECKING, Generator, Iterator, Optional, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, Generator, Iterator, Optional, Any
 
-from PiFinder import calc_utils
+from PiFinder import calc_utils, satellites
+from PiFinder.observing_nights import zone_for
+from PiFinder import target_follow, track_rates
+from PiFinder.target_follow import FollowStage, TargetFollow, angular_distance
 from PiFinder.state import SharedStateObj
+from PiFinder.utils import satellite_data_dir
 from PiFinder.types.mount import MountStatus, format_step
 
 import PiFinder.i18n  # noqa: F401
@@ -66,6 +72,9 @@ class MountControlPhases(Enum):
             The mount is tracking the sky but we are not doing drift compensation. This is entered, if the user moves the telescope manually.
         MOUNT_SPIRAL_SEARCH:
             The mount has been commanded to a spiral search pattern to find a target.
+        MOUNT_TARGET_FOLLOW:
+            The mount follows a moving target (see target_follow.py): a goto ahead
+            of the satellite, then custom track rates or repeated gotos.
 
     Note that a user interaction may at any time move the mount back to MOUNT_STOPPED, or put it into MOUNT_TRACKING.
     Once in drift compensation mode, the user may also select a new target, which will move the phase to MOUNT_TARGET_ACQUISITION_MOVE.
@@ -82,6 +91,7 @@ class MountControlPhases(Enum):
     MOUNT_DRIFT_COMPENSATION = auto()
     MOUNT_TRACKING = auto()
     MOUNT_SPIRAL_SEARCH = auto()
+    MOUNT_TARGET_FOLLOW = auto()
 
 
 class MountDirections(Enum):
@@ -158,13 +168,73 @@ DRIFT_CORRECTION_GAIN = 0.7
 SITE_SHIFT_RESTART_DEG = 0.005
 
 
-def angular_distance(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    """The angle in degrees between two RA/Dec positions in degrees."""
-    r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
-    cos_d = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(
-        r1 - r2
+def track_rate_label(rate: str) -> str:
+    """Short label of a non-sidereal track rate, for the status line."""
+    return {track_rates.LUNAR: _("Lunar"), track_rates.SOLAR: _("Solar")}.get(rate, "")
+
+
+def meet_text(seconds: float, meet: target_follow.MeetPoint) -> str:
+    """The wait at a meet point: "Meet 2:13 20°SE". Short, for the status
+    band of the 128 px screen."""
+    minutes, rest = divmod(int(math.ceil(max(0.0, seconds))), 60)
+    return (
+        _("Meet")
+        + f" {minutes}:{rest:02d} {meet.alt:.0f}°{satellites.compass(meet.az)}"
     )
-    return math.degrees(math.acos(max(-1.0, min(1.0, cos_d))))
+
+
+def next_pass_text(
+    item: Optional[satellites.SatPass], now: float, zone: Optional[str]
+) -> str:
+    """The next pass for a satellite without a meet point in the wait time,
+    in three short lines: "Next pass 21:43", "in 2h05", "max 38° SE". The
+    time is the meet time, in the time zone of the location."""
+    if item is None:
+        return _("No pass in 24 h")
+    when = target_follow.meet_time(item)
+    clock = datetime.datetime.fromtimestamp(when, zone_for(zone)).strftime("%H:%M")
+    minutes = max(0, int(round((when - now) / 60.0)))
+    hours, rest = divmod(minutes, 60)
+    wait = f"{hours}h{rest:02d}" if hours else f"{rest} min"
+    return "\n".join(
+        (
+            _("Next pass") + f" {clock}",
+            _("in") + f" {wait}",
+            _("max") + f" {item.max_alt:.0f}° {satellites.compass(item.max_alt_az)}",
+        )
+    )
+
+
+def _follow_correction(offset_deg: float) -> float:
+    """The rate in degrees per second that removes an offset to the target."""
+    return target_follow.clamp(
+        offset_deg / target_follow.CORRECTION_S, target_follow.MAX_CORRECTION_DEG_S
+    )
+
+
+# Commands that do not end a follow.
+FOLLOW_KEEPING_COMMANDS = (
+    "follow_target",
+    "reload_config",
+    "set_step_size",
+    "reduce_step_size",
+    "increase_step_size",
+)
+# During a follow these commands correct the path, they do not move the mount.
+FOLLOW_NUDGE_COMMANDS = ("manual_movement", "motion_start", "motion_stop")
+# The follow reads the trusted time again after this many seconds.
+CLOCK_REFRESH_S = 30.0
+# A mount position report older than this has no known time.
+POSITION_MAX_AGE_S = 5.0
+# The follow learns its pointing offset from a plate solve only while the
+# mount moves slower than this relative to the stars (degrees per second),
+# for at least the settle time. Then solve and mount position are of the
+# same moment.
+OFFSET_LEARN_MAX_DEG_S = 0.002
+OFFSET_SETTLE_S = 1.0
+OFFSET_CHECK_S = 1.0
+# A larger offset is a wrong solve or a mount that needs a sync.
+OFFSET_MAX_DEG = 5.0
 
 
 class MountControlBase:
@@ -207,6 +277,9 @@ class MountControlBase:
         The `run` method manages the main control loop, calling `init` on startup and
         handling graceful shutdown on interruption.
     """
+
+    # The directory where a follow stores corrected element sets.
+    corrected_directory: Path = satellite_data_dir
 
     def __init__(
         self, mount_queue: Queue, console_queue: Queue, shared_state: SharedStateObj
@@ -286,6 +359,35 @@ class MountControlBase:
         # goto after its last sync. The mount then reports the sky in a new
         # frame, so REFINE syncs again even when the solve is on target.
         self._sync_stale: bool = False
+
+        # System time of the last position report of the mount, 0 if none.
+        self.current_time: float = 0.0
+        # The moving target that the mount follows, or None.
+        self._follow: Optional[TargetFollow] = None
+        # The clock of the follow: unix time or None; tests replace it.
+        self.clock: Callable[[], Optional[float]] = self._trusted_time
+        self._clock_offset: Optional[float] = None
+        self._clock_offset_time = 0.0
+        # Pointing offset of the follow (RA, Dec degrees): plate solve minus
+        # mount position.
+        self._follow_offset: tuple[float, float] = (0.0, 0.0)
+        self._follow_solve_time = 0.0
+        self._follow_offset_check = 0.0
+        # System time since which the mount moves slowly, or None.
+        self._follow_quiet_since: Optional[float] = None
+        # A held arrow during a follow: (north, east, last step, start).
+        self._follow_motion: Optional[tuple[float, float, float, float]] = None
+        # True while a follow keeps the tracking of the mount off.
+        self._follow_tracking_off = False
+        # The longest wait at a meet point, in minutes (the setting
+        # mount_control_max_wait_min).
+        self.max_wait_min: float = target_follow.MEET_SEARCH_MINUTES
+        # The pointing offset of the last follow goto.
+        self._follow_aim_offset: tuple[float, float] = (0.0, 0.0)
+        # The track rate: track_rates.SIDEREAL, LUNAR or SOLAR.
+        self.track_rate: str = track_rates.SIDEREAL
+        # The track rate of the running goto_target command.
+        self._goto_track_rate: str = track_rates.SIDEREAL
 
     #
     # Methods to be overridden by subclasses for controlling the specifics of a mount
@@ -414,6 +516,37 @@ class MountControlBase:
         """
         raise NotImplementedError("This method should be overridden by subclasses.")
 
+    def set_track_rates(self, ra_rate_deg_s: float, dec_rate_deg_s: float) -> bool:
+        """Track at these absolute rates of RA and Dec (JNow, degrees/second).
+
+        Used to follow a moving target. A mount that cannot set custom rates
+        returns False, and the follow uses repeated gotos.
+        """
+        return False
+
+    def restore_sidereal_tracking(self) -> None:
+        """Track at the sidereal rate again, after set_track_rates."""
+        return None
+
+    def set_tracking(self, on: bool) -> bool:
+        """Turn the tracking of the mount on or off.
+
+        Returns False if the mount cannot do it.
+        """
+        return False
+
+    def apply_track_rate(self, rate: str) -> bool:
+        """Track at the sidereal, lunar or solar rate (track_rates).
+
+        Returns False if the mount cannot track at that rate.
+        """
+        return rate == track_rates.SIDEREAL
+
+    def refresh_track_rate(self) -> None:
+        """Called from the main loop. A mount that follows the Moon or the
+        Sun with custom rates updates them here."""
+        return None
+
     def move_mount_offset(
         self, north: float, east: float, step_size_deg: float
     ) -> bool:
@@ -537,6 +670,7 @@ class MountControlBase:
         This will be used to transition to the MOUNT_STOPPED phase in the control loop, regardless of the previous phase.
         """
         logger.debug("Phase: -> MOUNT_STOPPED")
+        self._follow = None
         self.state = MountControlPhases.MOUNT_STOPPED
 
     def mount_site_changed(self, shift_deg: float) -> None:
@@ -650,7 +784,14 @@ class MountControlBase:
         }
         if self._motion_started is not None:
             return _("Moving")
+        if self.state == MountControlPhases.MOUNT_TARGET_FOLLOW and self._follow:
+            return self._follow_status_text()
         text = texts.get(self.state, str(self.state.name))
+        if self.track_rate != track_rates.SIDEREAL and self.state in (
+            MountControlPhases.MOUNT_TRACKING,
+            MountControlPhases.MOUNT_DRIFT_COMPENSATION,
+        ):
+            text = f"{text} {track_rate_label(self.track_rate)}"
         if self.state == MountControlPhases.MOUNT_TARGET_ACQUISITION_REFINE:
             text = f"{text} {self._refine_count + 1}/{self.refine_max_iterations}"
         return text
@@ -707,6 +848,11 @@ class MountControlBase:
     def notify(self, text: str) -> None:
         """Show mount control progress on the PiFinder screen."""
         self.console_queue.put(["MOUNT", text])
+
+    def confirm(self, text: str) -> None:
+        """Show that the mount accepted a user input. Each screen shows it,
+        the mount page too."""
+        self.console_queue.put(["CONFIRM", text])
 
     def _stop_mount(self) -> bool:
         if self.state != MountControlPhases.MOUNT_STOPPED:
@@ -776,6 +922,7 @@ class MountControlBase:
         self.update_site()
         success = self.move_mount_to_target(target_ra, target_dec)
         if success:
+            self._set_track_rate(self._goto_track_rate)
             # Reset drift compensation when starting a new target acquisition
             if self.state == MountControlPhases.MOUNT_DRIFT_COMPENSATION:
                 self._reset_drift_compensation_data()
@@ -788,6 +935,510 @@ class MountControlBase:
             )
             self.notify(_("Slewing"))
         return success
+
+    def _set_track_rate(self, rate: str) -> None:
+        if rate not in track_rates.TRACK_RATES:
+            logger.warning("Unknown track rate %s", rate)
+            rate = track_rates.SIDEREAL
+        if rate == self.track_rate and rate == track_rates.SIDEREAL:
+            return
+        if self.apply_track_rate(rate):
+            if rate != self.track_rate and rate != track_rates.SIDEREAL:
+                self.notify(_("Track rate") + " " + track_rate_label(rate))
+            self.track_rate = rate
+            return
+        self.warn(_("No such track rate"))
+        if self.apply_track_rate(track_rates.SIDEREAL):
+            self.track_rate = track_rates.SIDEREAL
+
+    #
+    # Follow of a moving target
+    #
+
+    def _trusted_time(self) -> Optional[float]:
+        """Unix time from the time of PiFinder (GPS), or None without it.
+
+        The system clock of a PiFinder without a network can be wrong by
+        seconds or more, and a satellite moves a degree in one second.
+        """
+        now = time.time()
+        if (
+            self._clock_offset is None
+            or now - self._clock_offset_time > CLOCK_REFRESH_S
+        ):
+            dt = self.shared_state.datetime()
+            if dt is not None:
+                self._clock_offset = dt.timestamp() - now
+                self._clock_offset_time = now
+        return None if self._clock_offset is None else now + self._clock_offset
+
+    def _start_follow(self, command: dict) -> None:
+        location = self.shared_state.location()
+        if location is None or not location.lock:
+            self.warn(_("No location"))
+            return
+        self._clock_offset = None
+        now = self.clock()
+        if now is None:
+            self.warn(_("No time"))
+            return
+        try:
+            target = target_follow.target_from_command(command, location)
+            follow = TargetFollow(target, now)
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("Bad follow_target command: %s", exc)
+            self.warn(_("Bad target data"))
+            return
+        if not self._plan_meet(follow, now):
+            return
+        # The follow and its pointing offset start in the frame of the
+        # current location and time. No site change comes during it.
+        self.update_site()
+        self._follow = follow
+        self._follow_offset = (0.0, 0.0)
+        self._follow_solve_time = time.time()
+        self._follow_motion = None
+        # A follow starts from sidereal tracking: the mount leaves a lunar
+        # or solar track mode.
+        self._set_track_rate(track_rates.SIDEREAL)
+        self._reset_drift_compensation_data()
+        logger.info("Following %s", follow.name)
+        self.notify(_("Follow") + " " + follow.name)
+        self._follow_aim(now)
+
+    def _plan_meet(self, follow: TargetFollow, now: float) -> bool:
+        """Give a satellite below MEET_ALT_DEG its meet point. False, with a
+        warning, for a target that the mount cannot follow now.
+
+        A satellite at MEET_ALT_DEG or higher is past its meet point. The
+        meet point must be in ``max_wait_min``. A satellite that is higher
+        than MIN_ALT_DEG but has no meet point, or a meet point closer than
+        the lead, gets the follow without one. A lower satellite without a
+        meet point gets no follow: the PiFinder tells the next pass in
+        NEXT_PASS_HOURS.
+
+        The first search covers only the wait. The search of NEXT_PASS_HOURS
+        comes only for the text of the next pass, or for a pass that is not
+        over at the end of the wait: its visible part can come later.
+        """
+        alt = follow.point(now).alt
+        target = follow.target
+        meet = None
+        if (
+            isinstance(target, target_follow.SatelliteTarget)
+            and alt < target_follow.MEET_ALT_DEG
+        ):
+            long_min = target_follow.NEXT_PASS_HOURS * 60.0
+            wait_min = min(self.max_wait_min, long_min)
+            item = target_follow.find_pass(target, now, wait_min)
+            searched_min = wait_min
+            if (
+                item is not None
+                and wait_min < long_min
+                and item.set.timestamp() >= now + wait_min * 60.0 - 1.0
+            ):
+                item = target_follow.find_pass(target, now, long_min)
+                searched_min = long_min
+            if item is not None and (
+                target_follow.meet_time(item) - now <= self.max_wait_min * 60.0
+            ):
+                meet = target_follow.meet_point(target, item)
+            elif alt < target_follow.MIN_ALT_DEG:
+                if searched_min < long_min:
+                    item = target_follow.find_pass(target, now, long_min)
+                self.warn(self._next_pass_text(item, now))
+                return False
+        if meet is not None and (
+            alt < target_follow.MIN_ALT_DEG or meet.time - now > follow.lead_s
+        ):
+            follow.set_meet(meet)
+            logger.info(
+                "Follow: meet %s in %.0f s at %.0f° az %.0f°",
+                follow.name,
+                meet.time - now,
+                meet.alt,
+                meet.az,
+            )
+            return True
+        if alt < target_follow.MIN_ALT_DEG:
+            self.warn(_("Target too low"))
+            return False
+        return True
+
+    def _next_pass_text(self, item: Optional[satellites.SatPass], now: float) -> str:
+        location = self.shared_state.location()
+        return next_pass_text(item, now, getattr(location, "timezone", None))
+
+    def _follow_aim(self, now: float) -> None:
+        """Goto the target: ahead of it if it is fast, or to the meet point."""
+        follow = self._follow
+        if follow is None:
+            return
+        self.restore_sidereal_tracking()
+        self._follow_quiet_since = None
+        target = follow.aim(now)
+        self.target_ra, self.target_dec = target.ra, target.dec
+        self.target_reached = False
+        d_ra, d_dec = self._follow_offset
+        self._follow_aim_offset = (d_ra, d_dec)
+        if self.move_mount_to_target((target.ra - d_ra) % 360.0, target.dec - d_dec):
+            self.state = MountControlPhases.MOUNT_TARGET_FOLLOW
+            logger.debug(
+                "Follow: aim %d, lead %.0f s, RA=%.3f Dec=%.3f",
+                follow.aim_count,
+                follow.lead_s,
+                target.ra,
+                target.dec,
+            )
+        else:
+            self.warn(_("Goto failed!"))
+            self._end_follow()
+
+    def _end_follow(self) -> None:
+        follow = self._follow
+        if follow is None:
+            return
+        logger.info("Follow of %s ends", follow.name)
+        elements = follow.corrected_elements()
+        if elements is not None:
+            self._save_corrected(follow, elements)
+        self._follow = None
+        self._follow_motion = None
+        if self._follow_tracking_off:
+            self._follow_tracking_off = False
+            self.set_tracking(True)
+        self.restore_sidereal_tracking()
+        if self.state == MountControlPhases.MOUNT_TARGET_FOLLOW:
+            self.state = MountControlPhases.MOUNT_TRACKING
+
+    def _save_corrected(
+        self, follow: TargetFollow, elements: satellites.SatElements
+    ) -> None:
+        """Store the elements with the correction of the user. The catalog
+        uses them for the next follow and the next passes."""
+        now = self.clock()
+        if now is None:
+            now = time.time()
+        when = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+        logger.info(
+            "Follow: %s was %+.1f s ahead of its elements. Corrected:\n%s",
+            follow.name,
+            follow.time_offset_s,
+            elements.to_tle(),
+        )
+        try:
+            saved = satellites.save_corrected_element(
+                elements, when, self.corrected_directory
+            )
+        except OSError as exc:
+            logger.warning("Cannot store the corrected elements: %s", exc)
+            return
+        self.notify(_("Saved") + " " + saved.name)
+
+    def _follow_pointing(self) -> Optional[tuple[float, float]]:
+        """Where the telescope points: the mount position plus the offset
+        from the last plate solve. None without a mount position."""
+        if self.current_ra is None or self.current_dec is None:
+            return None
+        d_ra, d_dec = self._follow_offset
+        return (self.current_ra + d_ra) % 360.0, self.current_dec + d_dec
+
+    def _position_time(self, now: float) -> float:
+        """The follow time of the last mount position report."""
+        if not self.current_time:
+            return now
+        age = time.time() - self.current_time
+        return now - age if 0.0 <= age <= POSITION_MAX_AGE_S else now
+
+    def _learn_follow_offset(self) -> None:
+        """Take the pointing offset from a new plate solve.
+
+        A solve works before a pass, while the mount waits at the aim point,
+        and during the follow of a slow target. During a fast pass the stars
+        are streaks and no solve arrives: the last offset stays.
+        """
+        quiet_since = self._follow_quiet_since
+        system_now = time.time()
+        if quiet_since is None or self.current_ra is None or self.current_dec is None:
+            return
+        if system_now - self._follow_offset_check < OFFSET_CHECK_S:
+            return
+        self._follow_offset_check = system_now
+        latest = self.latest_solve()
+        if latest is None:
+            return
+        ra, dec, solved = latest
+        if solved <= self._follow_solve_time or solved < quiet_since + OFFSET_SETTLE_S:
+            return
+        self._follow_solve_time = solved
+        offset = (
+            target_follow.wrap_degrees(ra - self.current_ra),
+            dec - self.current_dec,
+        )
+        if max(abs(offset[0]), abs(offset[1])) > OFFSET_MAX_DEG:
+            logger.warning("Follow: solve is %.1f°, %.1f° from the mount", *offset)
+            return
+        self._follow_offset = offset
+        logger.debug("Follow: pointing offset RA %+.3f° Dec %+.3f°", *offset)
+
+    def _follow_set_rates(self, ra_rate: float, dec_rate: float) -> bool:
+        """Set the track rates and note if the mount now moves slowly."""
+        if not self.set_track_rates(ra_rate, dec_rate):
+            return False
+        if math.hypot(ra_rate, dec_rate) > OFFSET_LEARN_MAX_DEG_S:
+            self._follow_quiet_since = None
+        elif self._follow_quiet_since is None:
+            self._follow_quiet_since = time.time()
+        return True
+
+    def _follow_pass(self, point: target_follow.FollowPoint) -> None:
+        """Follow with gotos, for a mount without custom rates.
+
+        A target that is almost fixed in alt-az, as a geostationary
+        satellite, stays in view with tracking off. Then a goto is necessary
+        only for its small motion.
+        """
+        follow = self._follow
+        if follow is None:
+            return
+        follow.stage = FollowStage.PASS
+        if (
+            not self._follow_tracking_off
+            and target_follow.ground_fixed(point)
+            and self.set_tracking(False)
+        ):
+            self._follow_tracking_off = True
+            logger.info("Follow: %s is fixed in alt-az, tracking off", follow.name)
+
+    def _follow_step(self, now: Optional[float]) -> None:
+        """One step of the follow, from the phase loop (10 times a second)."""
+        follow = self._follow
+        if follow is None:
+            self.state = MountControlPhases.MOUNT_TRACKING
+            return
+        if now is None:
+            self.warn(_("No time"))
+            self._end_follow()
+            return
+        self._follow_held_arrow(follow, now)
+        follow.settle(now)
+        # The point of the target now, computed at most once in a pass. AIM
+        # and WAIT need it only for the altitude check, once per
+        # RATE_UPDATE_S. TRACK checks the altitude at its rate update.
+        point: Optional[target_follow.FollowPoint] = None
+        if follow.stage == FollowStage.PASS or (
+            follow.stage != FollowStage.TRACK and follow.alt_check_due(now)
+        ):
+            point = follow.point(now)
+            if self._follow_set(follow, point, now):
+                return
+        self._learn_follow_offset()
+
+        if follow.stage == FollowStage.AIM:
+            if self.target_reached or not self.is_mount_moving():
+                self.target_reached = False
+                follow.slew_done(now)
+                self._follow_quiet_since = time.time()
+                if (
+                    follow.late(now)
+                    and follow.aim_ra is not None
+                    and follow.aim_dec is not None
+                ):
+                    if point is None:
+                        point = follow.point(now)
+                    if (
+                        angular_distance(
+                            point.ra, point.dec, follow.aim_ra, follow.aim_dec
+                        )
+                        > target_follow.TRACK_MAX_ERROR_DEG
+                    ):
+                        # The slew took longer than the lead and the target
+                        # is far past: aim again with the measured slew time.
+                        self._follow_aim(now)
+            return
+
+        if follow.stage == FollowStage.WAIT:
+            if not follow.arrived(now):
+                self._follow_meet_refresh(follow, now)
+                return
+            if point is None:
+                point = follow.point(now)
+            if self._follow_set_rates(point.ra_rate, point.dec_rate):
+                follow.stage = FollowStage.TRACK
+                follow.last_rate_update = now
+            else:
+                self._follow_pass(point)
+            return
+
+        pointing = self._follow_pointing()
+        if follow.stage == FollowStage.TRACK:
+            if not follow.rate_update_due(now):
+                return
+            # One point: the target at the time of the mount position
+            # report, so the delay of the report causes no error. Its rates
+            # are the track rates and its position, moved on to now, is the
+            # target of the status.
+            when = now if pointing is None else self._position_time(now)
+            at = follow.point(when)
+            if self._follow_set(follow, at, now):
+                return
+            ahead = now - when
+            self.target_ra = (at.ra + at.ra_rate * ahead) % 360.0
+            self.target_dec = at.dec + at.dec_rate * ahead
+            ra_rate, dec_rate = at.ra_rate, at.dec_rate
+            if pointing is not None:
+                d_ra = target_follow.wrap_degrees(at.ra - pointing[0])
+                d_dec = at.dec - pointing[1]
+                error = angular_distance(at.ra, at.dec, *pointing)
+                if error > target_follow.TRACK_MAX_ERROR_DEG:
+                    logger.info("Follow: %.2f° off, aim again", error)
+                    self._follow_aim(now)
+                    return
+                ra_rate += _follow_correction(d_ra)
+                dec_rate += _follow_correction(d_dec)
+            if not self._follow_set_rates(ra_rate, dec_rate):
+                self._follow_pass(at)
+            return
+
+        if point is None:
+            return
+        self.target_ra, self.target_dec = point.ra, point.dec
+        if follow.stage == FollowStage.PASS and follow.arrived(now):
+            if (
+                pointing is None
+                and follow.aim_ra is not None
+                and follow.aim_dec is not None
+            ):
+                pointing = (follow.aim_ra, follow.aim_dec)
+            if pointing is None or angular_distance(
+                point.ra, point.dec, *pointing
+            ) > follow.pass_distance(point):
+                self._follow_aim(now)
+
+    def _follow_set(
+        self, follow: TargetFollow, point: target_follow.FollowPoint, now: float
+    ) -> bool:
+        """End the follow when the target is below MIN_ALT_DEG and no meet
+        point waits for it. True when the follow ended."""
+        if point.alt >= target_follow.MIN_ALT_DEG or follow.meet_pending(now):
+            return False
+        self.notify(follow.name + " " + _("set"))
+        self._end_follow()
+        self._stop_mount()
+        return True
+
+    def _follow_meet_refresh(self, follow: TargetFollow, now: float) -> None:
+        """Shortly before the meet time, goto the meet point again if a plate
+        solve changed the pointing offset during the wait."""
+        if (
+            follow.meet_refreshed
+            or not follow.meet_pending(now)
+            or follow.seconds_to_arrival(now) > target_follow.MEET_REFRESH_S
+        ):
+            return
+        follow.meet_refreshed = True
+        old, new = self._follow_aim_offset, self._follow_offset
+        if max(abs(new[0] - old[0]), abs(new[1] - old[1])) > (
+            target_follow.MEET_REFRESH_MIN_DEG
+        ):
+            logger.info("Follow: goto the meet point with the new offset")
+            self._follow_aim(now)
+
+    def _follow_seen(self, follow: TargetFollow, now: float) -> None:
+        """The user sees the satellite at the meet point: track it now."""
+        if not follow.see_it(now):
+            self.warn(_("Too early"))
+            return
+        logger.info("Follow: seen, %+.1f s ahead", follow.time_offset_s)
+        # TRANSLATORS: The user saw the satellite; the time correction follows
+        self.confirm(_("Seen") + f" {follow.time_offset_s:+.1f}s")
+        self._follow_step(now)
+
+    def _follow_nudge_command(self, command: dict, now: Optional[float]) -> None:
+        """An arrow during a follow moves the path, not only the mount: the
+        follow then holds the target where the user put it. During the wait
+        at a meet point the first arrow says "I see it"."""
+        follow = self._follow
+        if follow is None or now is None:
+            return
+        if (
+            command["type"] != "motion_stop"
+            and follow.stage == FollowStage.WAIT
+            and follow.meet_pending(now)
+        ):
+            self._follow_motion = None
+            self._follow_seen(follow, now)
+            return
+        if command["type"] == "motion_stop":
+            if self._follow_motion is not None:
+                follow.shift_now(now)
+            self._follow_motion = None
+            return
+        north, east, step_size = self._command_offset(command)
+        if command["type"] == "motion_start":
+            self._follow_motion = (north, east, now, now)
+            return
+        follow.nudge(north * step_size, east * step_size, now)
+        self._follow_nudged(follow)
+        self._notify_step(command, step_size)
+
+    def _command_offset(self, command: dict) -> tuple[float, float, float]:
+        """The sky direction (north, east) and the step size of a move
+        command: "offset" of manual_movement, or "north" and "east" of
+        motion_start."""
+        if "offset" in command:
+            north, east = command["offset"]
+        else:
+            north, east = command["north"], command["east"]
+        return north, east, command.get("step_size", self.step_size)
+
+    def _notify_step(self, command: dict, step_size: float) -> None:
+        """Show the move: the "label" of the command and the step size."""
+        label = command.get("label", "")
+        self.notify(f"{label} {format_step(step_size)}".strip())
+
+    def _follow_held_arrow(self, follow: TargetFollow, now: float) -> None:
+        """A held arrow moves the path one step size per second."""
+        if self._follow_motion is None:
+            return
+        north, east, last, started = self._follow_motion
+        if now - started > MAX_MOTION_S:
+            self._follow_motion = None
+            follow.shift_now(now)
+            return
+        angle = self.step_size * (now - last)
+        follow.nudge(north * angle, east * angle, now)
+        self._follow_motion = (north, east, now, started)
+
+    def _follow_nudged(self, follow: TargetFollow) -> None:
+        # The mount moves to the new path at the next rate update.
+        follow.last_rate_update = 0.0
+        logger.debug(
+            "Follow: correction %+.1f s, across %+.3f°, N %+.3f° E %+.3f°",
+            follow.time_offset_s,
+            follow.cross_deg,
+            follow.offset_north,
+            follow.offset_east,
+        )
+
+    def _follow_status_text(self) -> str:
+        follow = self._follow
+        if follow is None:
+            return ""
+        if follow.stage == FollowStage.AIM:
+            return _("Follow slew")
+        correction = ""
+        if abs(follow.time_offset_s) >= target_follow.MIN_TIME_OFFSET_S:
+            correction = f" {follow.time_offset_s:+.1f}s"
+        if follow.stage == FollowStage.WAIT:
+            now = self.clock()
+            seconds = 0.0 if now is None else follow.seconds_to_arrival(now)
+            if follow.meet is not None and now is not None and follow.meet_pending(now):
+                return meet_text(seconds, follow.meet)
+            return _("Follow in") + f" {seconds:.0f}s" + correction
+        if follow.stage == FollowStage.TRACK:
+            return _("Follow") + correction if correction else _("Following")
+        return _("Follow pass") + correction
 
     #
     # Shared logic and main loop
@@ -830,10 +1481,12 @@ class MountControlBase:
     def update_site(self) -> None:
         """Send a changed location or time to the mount.
 
-        The base class calls this before a goto and before each refine
-        sync, so the goto and the sync use the frame of the current
-        location and time. A subclass that sends a change calls
-        mount_site_changed(). Default implementation does nothing.
+        The base class calls this before a goto, before each refine sync
+        and at the start of a follow, so these use the frame of the
+        current location and time. The gotos inside a follow do not call
+        it, and a subclass sends no change while a follow runs. A subclass
+        that sends a change calls mount_site_changed(). Default
+        implementation does nothing.
         """
         pass
 
@@ -876,6 +1529,12 @@ class MountControlBase:
         # Any other command ends a continuous move first.
         if command["type"] not in ("motion_start", "motion_stop"):
             self._stop_motion()
+        if self._follow is not None and command["type"] in FOLLOW_NUDGE_COMMANDS:
+            self._follow_nudge_command(command, self.clock())
+            return
+        # A command that moves the mount, or stops it, ends a follow.
+        if command["type"] not in FOLLOW_KEEPING_COMMANDS:
+            self._end_follow()
 
         # Process the command based on its type
         if command["type"] == "motion_start":
@@ -949,8 +1608,15 @@ class MountControlBase:
             if retry_count > 0:
                 self.notify(_("Mount synced"))
 
+        elif command["type"] == "follow_target":
+            self._start_follow(command)
+
+        elif command["type"] == "set_track_rate":
+            self._set_track_rate(command.get("rate", track_rates.SIDEREAL))
+
         elif command["type"] == "goto_target":
             logger.debug("Mount: goto_target command received")
+            self._goto_track_rate = command.get("track_rate", track_rates.SIDEREAL)
             self.target_ra = command["ra"]
             self.target_dec = command["dec"]
             if command.get("epoch") == "J2000":
@@ -995,14 +1661,12 @@ class MountControlBase:
         elif command["type"] == "manual_movement" and "offset" in command:
             # A move in any sky direction: (north, east) parts of a unit
             # vector, from the eyepiece view. "label" names it on screen.
-            north, east = command["offset"]
-            step_size = command.get("step_size", self.step_size)
+            north, east, step_size = self._command_offset(command)
             if not self._move_mount_offset(north, east, step_size):
                 logger.warning("Mount: Manual movement failed")
                 self.warn(_("Mount did not move!"))
             else:
-                label = command.get("label", "")
-                self.notify(f"{label} {format_step(step_size)}".strip())
+                self._notify_step(command, step_size)
 
         elif command["type"] == "manual_movement":
             logger.debug("Mount: manual_movement command received")
@@ -1114,6 +1778,8 @@ class MountControlBase:
             # Clear the init solve coordinates after successful initialization
             self.init_solve_ra = None
             self.init_solve_dec = None
+            # init_mount sets the sidereal track mode.
+            self.track_rate = track_rates.SIDEREAL
             self.state = MountControlPhases.MOUNT_TRACKING
             logger.debug("Phase: -> MOUNT_TRACKING")
             self._last_error = ""
@@ -1126,6 +1792,10 @@ class MountControlBase:
         ):
             # Wait for user command to move to target
             # When that is received, the state will be changed to MOUNT_TARGET_ACQUISITION_MOVE
+            return
+
+        elif self.state == MountControlPhases.MOUNT_TARGET_FOLLOW:
+            self._follow_step(self.clock())
             return
 
         elif self.state == MountControlPhases.MOUNT_TARGET_ACQUISITION_MOVE:
@@ -1474,6 +2144,7 @@ class MountControlBase:
             phase_step = None
             while True:
                 self.periodic_mount_task()
+                self.refresh_track_rate()
                 self.check_motion_timeout()
                 self.publish_status()
 
