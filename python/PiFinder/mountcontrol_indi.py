@@ -60,6 +60,12 @@ SLEW_TIMEOUT_S = 300.0
 MOTION_AXIS_THRESHOLD = 0.38
 # Time for the driver to define CONNECTION_MODE after DRIVER_INFO.
 CONNECTION_MODE_WAIT_S = 3.0
+# Switches that are on when the driver reports an alt-az mount: the
+# standard INDI mount type, and the mount type of the OnStep driver.
+ALTAZ_SWITCHES = (
+    ("TELESCOPE_MOUNT_TYPE", "ALTAZ"),
+    ("MOUNT_TYPE", "MOUNT_TYPE_ALTAZ"),
+)
 # Time for the driver to define GEOGRAPHIC_COORD after the connection. The
 # telescope simulator defines it a moment after EQUATORIAL_EOD_COORD.
 LOCATION_PROPERTY_WAIT_S = 5.0
@@ -547,6 +553,16 @@ class MountControlIndi(MountControlBase):
                 return True
         return time.time() - self.current_time < self._current_position_update_threshold
 
+    def is_slewing(self) -> bool:
+        return self._slewing and time.time() - self._slew_start < SLEW_TIMEOUT_S
+
+    def is_altaz(self) -> bool:
+        """True when the driver reports an alt-az mount. A driver without
+        a mount type property gives False: the type is then unknown."""
+        if self.device is None:
+            return False
+        return any(self._switch_on(name, element) for name, element in ALTAZ_SWITCHES)
+
     def adjust_mount_drift_rates(
         self,
         drift_rate_adjustment_ra: float,
@@ -697,15 +713,18 @@ class MountControlIndi(MountControlBase):
         logger.info("Move N %+.2f E %+.2f by %.5f°", north, east, step_size_deg)
         return self._goto(ra, dec)
 
-    def start_motion(self, north: float, east: float) -> bool:
+    def start_motion(self, north: float, east: float, fastest: bool = False) -> bool:
         """Move with TELESCOPE_MOTION_NS/WE until stop_motion. A diagonal
-        moves both axes. The slew rate is the middle of the driver's rates."""
+        moves both axes. The slew rate is the middle of the driver's rates,
+        or the fastest rate."""
         if self.device is None:
             return False
         rates = self.client.get_property(self.device, "TELESCOPE_SLEW_RATE")
         if rates is not None and rates.elements:
             names = list(rates.elements)
-            self._set_switch("TELESCOPE_SLEW_RATE", names[len(names) // 2])
+            self._set_switch(
+                "TELESCOPE_SLEW_RATE", names[-1] if fastest else names[len(names) // 2]
+            )
         moved = False
         if abs(north) > MOTION_AXIS_THRESHOLD:
             element = "MOTION_NORTH" if north > 0 else "MOTION_SOUTH"
@@ -803,11 +822,11 @@ class MountControlIndi(MountControlBase):
         return lat, lon
 
     def _slew_active(self) -> bool:
-        """True while a goto, a manual step or a continuous move runs, or
-        the driver reports Busy."""
+        """True while a goto, a manual step, a continuous move or an RA
+        rotation runs, or the driver reports Busy."""
         if self._slewing and time.time() - self._slew_start < SLEW_TIMEOUT_S:
             return True
-        if self._motion_started is not None:
+        if self._motion_started is not None or self._rotation is not None:
             return True
         if self.device is not None:
             prop = self.client.get_property(self.device, POSITION)
