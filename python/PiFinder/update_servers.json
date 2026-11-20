@@ -1,0 +1,6 @@
+{
+  "attic_cache": "https://cache.pifinder.io",
+  "dev_namespace": "pifinder",
+  "release_namespace": "pifinder-release",
+  "delta_server": "https://deltas.pifinder.io"
+}

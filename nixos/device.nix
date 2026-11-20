@@ -1,6 +1,7 @@
 { config, lib, pkgs, ... }:
 let
   boot-splash = import ./pkgs/boot-splash.nix { inherit pkgs; };
+  updateServers = import ./update-servers.nix;
   check-root-mountable = pkgs.writeShellApplication {
     name = "check-root-mountable";
     runtimeInputs = with pkgs; [ coreutils gawk ];
@@ -34,7 +35,7 @@ in {
 
   # ---------------------------------------------------------------------------
   # Binary substituters — Pi downloads pre-built paths, never compiles.
-  # Two Attic caches on cache.pifinder.io (ADR 0037): pifinder-release
+  # Two Attic caches (ADR 0037, URLs in update-servers.nix): pifinder-release
   # (retained release closures) and pifinder (dev/nightly). The first-boot
   # download below resolves its target from the update manifest's best available
   # channel (ADR 0039).
@@ -42,8 +43,8 @@ in {
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ];
     substituters = [
-      "https://cache.pifinder.io/pifinder-release"
-      "https://cache.pifinder.io/pifinder"
+      updateServers.releaseCache
+      updateServers.devCache
       "https://cache.nixos.org"
     ];
     trusted-public-keys = [

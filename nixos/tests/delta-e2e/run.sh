@@ -16,7 +16,9 @@ dir=${DELTA_E2E_DIR:-/tmp/pifinder-delta-e2e}
 mkdir -p "$dir"
 cd "$dir"
 
-subs="https://cache.pifinder.io/pifinder-release https://cache.pifinder.io/pifinder https://cache.nixos.org"
+# The Attic cache URLs, from the one file that names the update servers.
+servers() { nix eval --raw -f "$here/../../update-servers.nix" "$1"; }
+subs="$(servers releaseCache) $(servers devCache) https://cache.nixos.org"
 keys="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= pifinder:8UU/O3oLkaJHHUyqEcPGl+9F1m4MqDca39Ewl49jBmE= pifinder-release:WG/Fw1cIX7YpwfWrbWTP5eCzn3bz6AaicW5qKxLKpoM="
 
 # The base, as the device holds it.

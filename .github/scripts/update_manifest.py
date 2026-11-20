@@ -12,10 +12,16 @@ from pathlib import Path
 
 STORE_PATH_RE = re.compile(r"^/nix/store/[a-z0-9]+-[A-Za-z0-9._+=?,-]+$")
 
-# The binary caches devices resolve upgrades from. A build is only advertised
-# as available once one of these actually serves its narinfo — see set_available.
-DEV_CACHE = "https://cache.pifinder.io/pifinder"
-RELEASE_CACHE = "https://cache.pifinder.io/pifinder-release"
+# The binary caches devices resolve upgrades from, from the one file that
+# names the update servers. A build is only advertised as available once one
+# of these actually serves its narinfo — see set_available.
+UPDATE_SERVERS = json.loads(
+    (
+        Path(__file__).resolve().parents[2] / "python/PiFinder/update_servers.json"
+    ).read_text()
+)
+DEV_CACHE = f"{UPDATE_SERVERS['attic_cache']}/{UPDATE_SERVERS['dev_namespace']}"
+RELEASE_CACHE = f"{UPDATE_SERVERS['attic_cache']}/{UPDATE_SERVERS['release_namespace']}"
 DEFAULT_CACHES = (DEV_CACHE, RELEASE_CACHE)
 EMPTY_MANIFEST = {
     "schema": 1,

@@ -5,6 +5,7 @@ let
   pifinder-src = import ./pkgs/pifinder-src.nix { inherit pkgs; };
   boot-splash = import ./pkgs/boot-splash.nix { inherit pkgs; };
   uboot-sd = import ./pkgs/uboot-sd.nix { inherit pkgs; };
+  updateServers = import ./update-servers.nix;
   # The U-Boot boot counter (ADR 0038, nixos/pkgs/uboot-sd.nix): two files on
   # the FAT FIRMWARE partition. pifinder.bootcount is 4 bytes: magic 0xbd,
   # version 1, count, upgrade_available. pifinder-fallback.env names the
@@ -169,7 +170,7 @@ in {
     deltaUrl = lib.mkOption {
       type = lib.types.str;
       default = "";
-      example = "https://deltas.pifinder.io";
+      example = updateServers.deltaServer;
       description = ''
         Base URL of the pifinder-differ delta server. When set, the upgrade
         prefetches byte-level patches against store paths the device already
@@ -230,7 +231,7 @@ in {
 
   # ---------------------------------------------------------------------------
   # Binary substituters — Pi downloads pre-built paths, never compiles.
-  # Two Attic caches on cache.pifinder.io (ADR 0037):
+  # Two Attic caches (ADR 0037, URLs in update-servers.nix):
   #   pifinder-release — tagged release closures, never garbage-collected, so a
   #                      device upgrading long after a release still resolves it.
   #   pifinder         — dev/nightly builds, short retention.
@@ -239,8 +240,8 @@ in {
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ];
     substituters = [
-      "https://cache.pifinder.io/pifinder-release"
-      "https://cache.pifinder.io/pifinder"
+      updateServers.releaseCache
+      updateServers.devCache
       "https://cache.nixos.org"
     ];
     trusted-public-keys = [

@@ -11,6 +11,10 @@ name: Release NixOS image
 # mirroring nixos-pr-build.yml. The arch-sensitive `nix build` runs there; the
 # image is handed off as an artifact and the arch-independent packaging +
 # publishing happens on ubuntu-latest.
+#
+# The Attic cache URLs below are a copy of python/PiFinder/update_servers.json,
+# the one file that names the update servers, as in nixos-pr-build.yml.
+# python/tests/test_update_servers.py checks that the copy matches the file.
 on:
   workflow_dispatch:
     inputs:

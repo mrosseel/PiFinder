@@ -18,6 +18,12 @@ name: Build PiFinder NixOS (testable PRs)
 # is pushed back to Attic, so the first build after a kernel/source change is
 # the only slow one; every build after it is fast. The self-hosted Pi5 is a
 # last-resort fallback that only runs if the hosted build fails.
+#
+# The Attic cache URLs below are a copy of python/PiFinder/update_servers.json,
+# the one file that names the update servers. They stay literal here: this
+# workflow file comes from the base branch, but the build jobs check out the
+# PR head, and the Attic token must never go to a URL that a PR can change.
+# python/tests/test_update_servers.py checks that the copy matches the file.
 on:
   pull_request_target:
     types: [labeled, synchronize, opened]

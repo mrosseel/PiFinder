@@ -20,12 +20,13 @@ REPO = Path(__file__).resolve().parents[3] / "python"
 sys.path.insert(0, str(REPO))
 
 from PiFinder import delta_updates, nixos_upgrade  # noqa: E402
+from PiFinder.update_servers import DELTA_SERVER  # noqa: E402
 
 target = sys.argv[1]
 work = Path(sys.argv[2])
 work.mkdir(parents=True, exist_ok=True)
 delta_updates.WORK_ROOT = work / "delta-work"
-os.environ.setdefault("PIFINDER_DELTA_URL", "https://deltas.pifinder.io")
+os.environ.setdefault("PIFINDER_DELTA_URL", DELTA_SERVER)
 
 statuses = []
 
