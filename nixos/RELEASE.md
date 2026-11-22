@@ -19,7 +19,7 @@ Decisions: [ADR 0037](../docs/adr/0037-nixos-builds-cache-and-update-channels.md
 | Item | Place | Note |
 | --- | --- | --- |
 | NixOS source | `mrosseel/PiFinder`, branch `nixos` | Releases are built from here. |
-| Release workflow | `brickbots/PiFinder`, branch `main` | Its `release.yml` and `.github/scripts/` must be the same as the files on `nixos`. The old branch `ci/btrfs-migration-release` is no longer needed. |
+| Release workflow | `brickbots/PiFinder`, branch `main` | Its `release.yml` and `.github/scripts/` must be the same as the files on `nixos`. |
 | Update manifest | `brickbots/PiFinder`, branch `nixos-manifest`, `update-manifest.json` | Devices read only this file. A build that is only in the `mrosseel` manifest does not show on a device. |
 | Migration gate | `brickbots/PiFinder`, branch `release`, `migration_gate.json` | Flag `nixos_migration`. |
 | Release assets | GitHub releases on `brickbots/PiFinder` | SD images, migration tarball, `.sha256` files. |
@@ -190,12 +190,6 @@ and a rev 4 (CM4) before the manifest names it.
 
 ## Known faults
 
-- **Never start a release from an old `release.yml`.** A copy older than
-  #658 writes `migration_url`, and 2.6.3 units then start the ext4 migration.
-  Rule 4 of [Release rules](#release-rules) finds a different copy.
-- **Older releases have a wrong tag.** Before the fork tag step, a release
-  from a fork source made its tag on the head of brickbots `release`, not on the built commit.
-  For example, `v3.1.3-beta` is on a Pi OS commit.
 - **The FAT partition does not change after the migration.** NixOS updates
   only U-Boot there (`pifinder-uboot-update`). A fix in `config.txt` or a
   device tree on FAT reaches new migrations and new cards, not cards that
