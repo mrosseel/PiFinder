@@ -866,10 +866,17 @@ in {
             [ "$(readlink -f "$S")" = "$CURRENT" ] && SKIP=1 && break
           done
           [ "$SKIP" = 1 ] && continue
-          if is_confirmed "$G"; then
-            TARGET="$G"
-            break
-          fi
+          # The ledger holds the system that ran: the camera specialisation
+          # on a device with another camera than the base one.
+          for S in "$G" "$G"/specialisation/*/; do
+            [ -e "$S" ] || continue
+            S=$(readlink -f "$S")
+            if is_confirmed "$S"; then
+              TARGET="$S"
+              break
+            fi
+          done
+          [ -n "$TARGET" ] && break
           [ -z "$FALLBACK" ] && FALLBACK="$G"
         done
         [ -z "$TARGET" ] && TARGET="$FALLBACK"
