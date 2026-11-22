@@ -1180,6 +1180,9 @@ Press **SQUARE** in the list to check for new versions again.
    Re-imaging the SD card is not the fix for this.  If WiFi is configured but the check still
    fails, move closer to the router or re-enter the network details.
 
+If the PiFinder does not start after an update, use recovery mode.  See
+:ref:`troubleshooting:the pifinder fails to start after an update`.
+
 You can also download a pre-built image of any software release and write it to the
 PiFinder's SD card.  See our `release page <https://github.com/brickbots/PiFinder/releases>`_
 for information about each release and a download link.
