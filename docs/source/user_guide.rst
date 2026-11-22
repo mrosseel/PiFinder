@@ -1152,8 +1152,16 @@ channel.  Press **RIGHT** on the channel to change it:
   without internet, so you can go back to a version that worked.
 * **Unstable**: development builds.  This channel shows only when developer mode is on.
 
-Press **DOWN** to move into the list of versions, then **RIGHT** to select one.  The next
-screen shows the version and three options:
+.. image:: images/user_guide/software_update_01_docs.png
+
+Press **DOWN** to move into the list of versions.  The selected version shows when it was
+built.
+
+.. image:: images/user_guide/software_update_02_docs.png
+
+Press **RIGHT** to select the version.  The next screen shows the version and three options:
+
+.. image:: images/user_guide/software_update_03_docs.png
 
 * **Install** starts the update.  The PiFinder downloads the update, installs it and
   restarts.  This can take several minutes.
